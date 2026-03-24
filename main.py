@@ -10,9 +10,9 @@ app = FastAPI()
 anthropic = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
 # ── Config (set these in Railway environment variables) ──────────────────────
-VERIFY_TOKEN = os.environ["VERIFY_TOKEN"]
-APP_SECRET = os.environ["APP_SECRET"]
-ACCESS_TOKEN = os.environ["INSTAGRAM_ACCESS_TOKEN"]
+VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN", "")
+APP_SECRET = os.environ.get("APP_SECRET", "")
+ACCESS_TOKEN = os.environ.get("INSTAGRAM_ACCESS_TOKEN", "")
 # ─────────────────────────────────────────────────────────────────────────────
 
 # In-memory conversation store  {sender_id: [{"role": ..., "content": ...}]}
