@@ -10,3 +10,5 @@ Edit this list to add or remove trigger words — the bot reads them on startup.
 - how much
 - tell me more
 - sign me up
+- system
+- freedom
