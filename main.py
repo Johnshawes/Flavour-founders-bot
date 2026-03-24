@@ -228,7 +228,7 @@ async def receive_message(request: Request):
                     if comment_has_trigger(comment_text):
                         logger.info(f"Trigger keyword matched in comment {comment_id}")
                         await reply_to_comment(comment_id, "Hey! Just sent you a DM 👀")
-                        opening = "Hey! Saw you commented on one of John's posts — love that you reached out 😄 Quick question: are you running a bakery or cafe at the moment?"
+                        opening = "Hey! Noticed your comment 👀 quick one — you running a bakery or café?"
                         await send_dm(commenter_id, opening)
                         conversations[commenter_id] = [
                             {"role": "assistant", "content": opening},
