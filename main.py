@@ -2,6 +2,8 @@ import os
 import logging
 import hmac
 import hashlib
+import random
+import asyncio
 from pathlib import Path
 import httpx
 from fastapi import FastAPI, Request, HTTPException
@@ -111,8 +113,16 @@ def comment_has_trigger(text: str) -> bool:
     return any(kw in text_lower for kw in TRIGGER_KEYWORDS)
 
 
+async def human_delay():
+    """Random delay between 45 seconds and 4 minutes to simulate a real person."""
+    delay = random.uniform(45, 240)
+    logger.info(f"Waiting {delay:.0f}s before responding...")
+    await asyncio.sleep(delay)
+
+
 async def reply_to_comment(comment_id: str, message: str):
     """Post a public reply to a comment via Instagram Graph API."""
+    await human_delay()
     url = f"https://graph.instagram.com/v21.0/{comment_id}/replies"
     params = {
         "message": message,
@@ -135,6 +145,7 @@ async def reply_to_comment(comment_id: str, message: str):
 
 
 async def send_dm(recipient_id: str, text: str):
+    await human_delay()
     url = "https://graph.instagram.com/v21.0/me/messages"
     payload = {
         "recipient": {"id": recipient_id},
