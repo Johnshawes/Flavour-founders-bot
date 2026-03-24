@@ -2,6 +2,7 @@ import os
 import logging
 import hmac
 import hashlib
+from pathlib import Path
 import httpx
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import PlainTextResponse
@@ -23,6 +24,35 @@ anthropic_client = Anthropic(api_key=ANTHROPIC_API_KEY) if ANTHROPIC_API_KEY els
 
 # In-memory conversation store  {sender_id: [{"role": ..., "content": ...}]}
 conversations: dict[str, list] = {}
+
+# Track comments we've already replied to
+processed_comments: set[str] = set()
+
+
+def load_trigger_keywords() -> list[str]:
+    """Load trigger keywords from the ## Trigger Keywords section of CLAUDE.md."""
+    claude_md = Path(__file__).parent / "CLAUDE.md"
+    if not claude_md.exists():
+        logger.warning("CLAUDE.md not found, using default keywords")
+        return ["info", "interested", "how much", "tell me more", "sign me up"]
+
+    text = claude_md.read_text(encoding="utf-8")
+    keywords = []
+    in_section = False
+    for line in text.splitlines():
+        if line.strip().lower().startswith("## trigger keywords"):
+            in_section = True
+            continue
+        if in_section and line.strip().startswith("## "):
+            break
+        if in_section and line.strip().startswith("- "):
+            keywords.append(line.strip().lstrip("- ").strip().lower())
+
+    logger.info(f"Loaded trigger keywords: {keywords}")
+    return keywords if keywords else ["info", "interested", "how much", "tell me more", "sign me up"]
+
+
+TRIGGER_KEYWORDS = load_trigger_keywords()
 
 SYSTEM_PROMPT = """You are a friendly assistant managing DMs for John Hawes — a business consultant who helps bakery and café owners get profitable and work less than 8 hours a week.
 
@@ -73,6 +103,26 @@ def verify_signature(payload: bytes, signature: str) -> bool:
         APP_SECRET.encode(), payload, hashlib.sha256
     ).hexdigest()
     return hmac.compare_digest(expected, signature)
+
+
+def comment_has_trigger(text: str) -> bool:
+    """Check if a comment contains any trigger keyword."""
+    text_lower = text.lower()
+    return any(kw in text_lower for kw in TRIGGER_KEYWORDS)
+
+
+async def reply_to_comment(comment_id: str, message: str):
+    """Post a public reply to a comment."""
+    url = f"https://graph.instagram.com/v21.0/{comment_id}/replies"
+    payload = {"message": message}
+    logger.info(f"Replying to comment {comment_id}: {message}")
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.post(url, json=payload, params={"access_token": ACCESS_TOKEN})
+            logger.info(f"Comment reply response: {r.status_code} {r.text}")
+            r.raise_for_status()
+    except Exception as e:
+        logger.error(f"Failed to reply to comment {comment_id}: {e}")
 
 
 async def send_dm(recipient_id: str, text: str):
@@ -148,10 +198,35 @@ async def receive_message(request: Request):
 
     for entry in data.get("entry", []):
         try:
-            # Handle Instagram API v25 format (field/value wrapper)
             for change in entry.get("changes", []):
-                if change.get("field") == "messages":
-                    value = change.get("value", {})
+                field = change.get("field")
+                value = change.get("value", {})
+
+                # ── Handle comments ──────────────────────────────────
+                if field == "comments":
+                    comment_id = value.get("id")
+                    comment_text = value.get("text", "")
+                    commenter_id = value.get("from", {}).get("id")
+
+                    if not comment_id or not commenter_id:
+                        continue
+                    if comment_id in processed_comments:
+                        continue
+
+                    processed_comments.add(comment_id)
+                    logger.info(f"Comment from {commenter_id}: {comment_text}")
+
+                    if comment_has_trigger(comment_text):
+                        logger.info(f"Trigger keyword matched in comment {comment_id}")
+                        await reply_to_comment(comment_id, "Hey! Just sent you a DM 👀")
+                        opening = "Hey! Saw you commented on one of John's posts — love that you reached out 😄 Quick question: are you running a bakery or cafe at the moment?"
+                        await send_dm(commenter_id, opening)
+                        conversations[commenter_id] = [
+                            {"role": "assistant", "content": opening},
+                        ]
+
+                # ── Handle DMs (v25 format) ──────────────────────────
+                elif field == "messages":
                     sender_id = value.get("sender", {}).get("id")
                     text = value.get("message", {}).get("text")
 
@@ -160,7 +235,10 @@ async def receive_message(request: Request):
 
                     logger.info(f"Message from {sender_id}: {text}")
                     reply = await get_claude_reply(sender_id, text)
-                    await send_dm(sender_id, reply)
+                    if reply.strip().upper() != "IGNORE":
+                        await send_dm(sender_id, reply)
+                    else:
+                        logger.info(f"Ignoring casual message from {sender_id}")
 
             # Also handle legacy messaging format as fallback
             for event in entry.get("messaging", []):
@@ -174,7 +252,10 @@ async def receive_message(request: Request):
 
                 logger.info(f"Message (legacy) from {sender_id}: {text}")
                 reply = await get_claude_reply(sender_id, text)
-                await send_dm(sender_id, reply)
+                if reply.strip().upper() != "IGNORE":
+                    await send_dm(sender_id, reply)
+                else:
+                    logger.info(f"Ignoring casual message from {sender_id}")
         except Exception as e:
             logger.error(f"Error processing entry: {e}")
 
