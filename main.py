@@ -112,17 +112,26 @@ def comment_has_trigger(text: str) -> bool:
 
 
 async def reply_to_comment(comment_id: str, message: str):
-    """Post a public reply to a comment."""
+    """Post a public reply to a comment via Instagram Graph API."""
     url = f"https://graph.instagram.com/v21.0/{comment_id}/replies"
-    payload = {"message": message}
+    params = {
+        "message": message,
+        "access_token": ACCESS_TOKEN,
+    }
     logger.info(f"Replying to comment {comment_id}: {message}")
+    logger.info(f"Comment reply URL: {url}")
     try:
         async with httpx.AsyncClient() as client:
-            r = await client.post(url, json=payload, params={"access_token": ACCESS_TOKEN})
-            logger.info(f"Comment reply response: {r.status_code} {r.text}")
+            r = await client.post(url, params=params)
+            logger.info(f"Comment reply response status: {r.status_code}")
+            logger.info(f"Comment reply response body: {r.text}")
+            if r.status_code != 200:
+                logger.error(f"Comment reply failed: {r.status_code} - {r.text}")
             r.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        logger.error(f"HTTP error replying to comment {comment_id}: {e.response.status_code} - {e.response.text}")
     except Exception as e:
-        logger.error(f"Failed to reply to comment {comment_id}: {e}")
+        logger.error(f"Failed to reply to comment {comment_id}: {type(e).__name__}: {e}")
 
 
 async def send_dm(recipient_id: str, text: str):
