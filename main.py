@@ -1,4 +1,5 @@
 import os
+import logging
 import hmac
 import hashlib
 import httpx
@@ -6,14 +7,19 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import PlainTextResponse
 from anthropic import Anthropic
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 app = FastAPI()
-anthropic = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
 # ── Config (set these in Railway environment variables) ──────────────────────
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN", "")
 APP_SECRET = os.environ.get("APP_SECRET", "")
 ACCESS_TOKEN = os.environ.get("INSTAGRAM_ACCESS_TOKEN", "")
 # ─────────────────────────────────────────────────────────────────────────────
+
+anthropic_client = Anthropic(api_key=ANTHROPIC_API_KEY) if ANTHROPIC_API_KEY else None
 
 # In-memory conversation store  {sender_id: [{"role": ..., "content": ...}]}
 conversations: dict[str, list] = {}
@@ -65,19 +71,26 @@ async def send_dm(recipient_id: str, text: str):
         "recipient": {"id": recipient_id},
         "message": {"text": text},
     }
+    logger.info(f"Sending DM to {recipient_id}: {text[:50]}...")
     async with httpx.AsyncClient() as client:
         r = await client.post(url, json=payload, params={"access_token": ACCESS_TOKEN})
+        logger.info(f"Instagram API response: {r.status_code} {r.text}")
         r.raise_for_status()
 
 
 async def get_claude_reply(sender_id: str, user_message: str) -> str:
+    if not anthropic_client:
+        logger.error("Anthropic API key not set")
+        return "Sorry, I'm having a technical issue. Please try again later!"
+
     history = conversations.setdefault(sender_id, [])
     history.append({"role": "user", "content": user_message})
 
     # Keep last 20 messages to stay within context limits
     trimmed = history[-20:]
 
-    response = anthropic.messages.create(
+    logger.info(f"Calling Claude for sender {sender_id}")
+    response = anthropic_client.messages.create(
         model="claude-sonnet-4-20250514",
         max_tokens=300,
         system=SYSTEM_PROMPT,
@@ -85,6 +98,7 @@ async def get_claude_reply(sender_id: str, user_message: str) -> str:
     )
     reply = response.content[0].text
     history.append({"role": "assistant", "content": reply})
+    logger.info(f"Claude reply: {reply[:50]}...")
     return reply
 
 
@@ -92,11 +106,14 @@ async def get_claude_reply(sender_id: str, user_message: str) -> str:
 @app.get("/webhook")
 async def verify_webhook(request: Request):
     params = request.query_params
+    logger.info(f"Webhook verification request: {dict(params)}")
     if (
         params.get("hub.mode") == "subscribe"
         and params.get("hub.verify_token") == VERIFY_TOKEN
     ):
+        logger.info("Webhook verified successfully")
         return PlainTextResponse(params.get("hub.challenge", ""))
+    logger.warning("Webhook verification failed")
     raise HTTPException(status_code=403, detail="Verification failed")
 
 
@@ -110,8 +127,24 @@ async def receive_message(request: Request):
     #     raise HTTPException(status_code=403, detail="Invalid signature")
 
     data = await request.json()
+    logger.info(f"Received webhook payload: {data}")
 
     for entry in data.get("entry", []):
+        # Handle Instagram API v25 format (field/value wrapper)
+        for change in entry.get("changes", []):
+            if change.get("field") == "messages":
+                value = change.get("value", {})
+                sender_id = value.get("sender", {}).get("id")
+                text = value.get("message", {}).get("text")
+
+                if not text or not sender_id:
+                    continue
+
+                logger.info(f"Message from {sender_id}: {text}")
+                reply = await get_claude_reply(sender_id, text)
+                await send_dm(sender_id, reply)
+
+        # Also handle legacy messaging format as fallback
         for event in entry.get("messaging", []):
             sender_id = event.get("sender", {}).get("id")
             message = event.get("message", {})
@@ -121,6 +154,7 @@ async def receive_message(request: Request):
             if message.get("is_echo") or not text or not sender_id:
                 continue
 
+            logger.info(f"Message (legacy) from {sender_id}: {text}")
             reply = await get_claude_reply(sender_id, text)
             await send_dm(sender_id, reply)
 
@@ -130,4 +164,5 @@ async def receive_message(request: Request):
 # ── Health check ─────────────────────────────────────────────────────────────
 @app.get("/")
 async def health():
+    logger.info("Health check hit")
     return {"status": "Flavour Founders Bot is running 🚀"}
