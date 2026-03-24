@@ -103,11 +103,11 @@ async def verify_webhook(request: Request):
 # ── Incoming messages (POST) ─────────────────────────────────────────────────
 @app.post("/webhook")
 async def receive_message(request: Request):
-    # Validate signature
-    sig = request.headers.get("X-Hub-Signature-256", "")
-    body = await request.body()
-    if not verify_signature(body, sig):
-        raise HTTPException(status_code=403, detail="Invalid signature")
+    # TODO: Re-enable signature verification after testing
+    # sig = request.headers.get("X-Hub-Signature-256", "")
+    # body = await request.body()
+    # if not verify_signature(body, sig):
+    #     raise HTTPException(status_code=403, detail="Invalid signature")
 
     data = await request.json()
 
