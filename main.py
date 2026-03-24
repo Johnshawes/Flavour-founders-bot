@@ -72,10 +72,13 @@ async def send_dm(recipient_id: str, text: str):
         "message": {"text": text},
     }
     logger.info(f"Sending DM to {recipient_id}: {text[:50]}...")
-    async with httpx.AsyncClient() as client:
-        r = await client.post(url, json=payload, params={"access_token": ACCESS_TOKEN})
-        logger.info(f"Instagram API response: {r.status_code} {r.text}")
-        r.raise_for_status()
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.post(url, json=payload, params={"access_token": ACCESS_TOKEN})
+            logger.info(f"Instagram API response: {r.status_code} {r.text}")
+            r.raise_for_status()
+    except Exception as e:
+        logger.error(f"Failed to send DM to {recipient_id}: {e}")
 
 
 async def get_claude_reply(sender_id: str, user_message: str) -> str:
@@ -90,16 +93,20 @@ async def get_claude_reply(sender_id: str, user_message: str) -> str:
     trimmed = history[-20:]
 
     logger.info(f"Calling Claude for sender {sender_id}")
-    response = anthropic_client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=300,
-        system=SYSTEM_PROMPT,
-        messages=trimmed,
-    )
-    reply = response.content[0].text
-    history.append({"role": "assistant", "content": reply})
-    logger.info(f"Claude reply: {reply[:50]}...")
-    return reply
+    try:
+        response = anthropic_client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=300,
+            system=SYSTEM_PROMPT,
+            messages=trimmed,
+        )
+        reply = response.content[0].text
+        history.append({"role": "assistant", "content": reply})
+        logger.info(f"Claude reply: {reply[:50]}...")
+        return reply
+    except Exception as e:
+        logger.error(f"Claude API error for sender {sender_id}: {e}")
+        return "Sorry, I'm having a technical issue. Please try again later!"
 
 
 # ── Webhook verification (GET) ───────────────────────────────────────────────
@@ -130,33 +137,36 @@ async def receive_message(request: Request):
     logger.info(f"Received webhook payload: {data}")
 
     for entry in data.get("entry", []):
-        # Handle Instagram API v25 format (field/value wrapper)
-        for change in entry.get("changes", []):
-            if change.get("field") == "messages":
-                value = change.get("value", {})
-                sender_id = value.get("sender", {}).get("id")
-                text = value.get("message", {}).get("text")
+        try:
+            # Handle Instagram API v25 format (field/value wrapper)
+            for change in entry.get("changes", []):
+                if change.get("field") == "messages":
+                    value = change.get("value", {})
+                    sender_id = value.get("sender", {}).get("id")
+                    text = value.get("message", {}).get("text")
 
-                if not text or not sender_id:
+                    if not text or not sender_id:
+                        continue
+
+                    logger.info(f"Message from {sender_id}: {text}")
+                    reply = await get_claude_reply(sender_id, text)
+                    await send_dm(sender_id, reply)
+
+            # Also handle legacy messaging format as fallback
+            for event in entry.get("messaging", []):
+                sender_id = event.get("sender", {}).get("id")
+                message = event.get("message", {})
+                text = message.get("text")
+
+                # Ignore echoes (messages sent by the page itself)
+                if message.get("is_echo") or not text or not sender_id:
                     continue
 
-                logger.info(f"Message from {sender_id}: {text}")
+                logger.info(f"Message (legacy) from {sender_id}: {text}")
                 reply = await get_claude_reply(sender_id, text)
                 await send_dm(sender_id, reply)
-
-        # Also handle legacy messaging format as fallback
-        for event in entry.get("messaging", []):
-            sender_id = event.get("sender", {}).get("id")
-            message = event.get("message", {})
-            text = message.get("text")
-
-            # Ignore echoes (messages sent by the page itself)
-            if message.get("is_echo") or not text or not sender_id:
-                continue
-
-            logger.info(f"Message (legacy) from {sender_id}: {text}")
-            reply = await get_claude_reply(sender_id, text)
-            await send_dm(sender_id, reply)
+        except Exception as e:
+            logger.error(f"Error processing entry: {e}")
 
     return {"status": "ok"}
 
