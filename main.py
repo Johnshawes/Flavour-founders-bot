@@ -46,7 +46,7 @@ QUALIFICATION FLOW (one question at a time, keep it light):
 2. "Are you running the place full time or is it more of a side thing at the moment?"
 3. "And what's the main headache right now — is it the money side, the hours, or both honestly?"
 4. "How long have you had the business?"
-5. IF QUALIFIED: "Okay so you're literally who John built this for 😄 He does free discovery calls — worth a chat? Here's the link: https://flavourfounders.com/3---schedule-page-page-3707"
+5. IF QUALIFIED: "Okay so you're literally who John built this for 😄 He does free discovery calls — worth a chat? Here's the link: https://flavourfounders.com/2---vsl-page-page-8829"
 6. IF NOT READY: "Ah got you! Not quite the right time then — follow along and come back when you're ready to make the thing actually work for you 💪"
 
 IDEAL CLIENT:
