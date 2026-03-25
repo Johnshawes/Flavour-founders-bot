@@ -21,6 +21,7 @@ VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN", "")
 APP_SECRET = os.environ.get("APP_SECRET", "")
 ACCESS_TOKEN = os.environ.get("INSTAGRAM_ACCESS_TOKEN", "")
 LEAD_MAGNET_URL = os.environ.get("LEAD_MAGNET_URL", "LEAD_MAGNET_URL_PLACEHOLDER")
+PAGE_ID = os.environ.get("INSTAGRAM_PAGE_ID", "")  # Bot's own IG ID to filter echoes
 # ─────────────────────────────────────────────────────────────────────────────
 
 anthropic_client = Anthropic(api_key=ANTHROPIC_API_KEY) if ANTHROPIC_API_KEY else None
@@ -232,20 +233,23 @@ async def get_claude_reply(sender_id: str, user_message: str, funnel_type: str =
     system_prompt = LEAD_MAGNET_SYSTEM_PROMPT if active_funnel == "lead_magnet" else APPLICATION_SYSTEM_PROMPT
 
     logger.info(f"Calling Claude for sender {sender_id} (funnel: {active_funnel})")
-    try:
-        response = anthropic_client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=300,
-            system=system_prompt,
-            messages=trimmed,
-        )
-        reply = response.content[0].text
-        history.append({"role": "assistant", "content": reply})
-        logger.info(f"Claude reply: {reply[:50]}...")
-        return reply
-    except Exception as e:
-        logger.error(f"Claude API error for sender {sender_id}: {e}")
-        return "Sorry, I'm having a technical issue. Please try again later!"
+    for attempt in range(3):
+        try:
+            response = anthropic_client.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=300,
+                system=system_prompt,
+                messages=trimmed,
+            )
+            reply = response.content[0].text
+            history.append({"role": "assistant", "content": reply})
+            logger.info(f"Claude reply: {reply[:50]}...")
+            return reply
+        except Exception as e:
+            logger.error(f"Claude API error for sender {sender_id} (attempt {attempt+1}/3): {e}")
+            if attempt < 2:
+                await asyncio.sleep(3)
+    return "Sorry, I'm having a technical issue. Please try again later!"
 
 
 # ── Webhook verification (GET) ───────────────────────────────────────────────
@@ -317,6 +321,11 @@ async def receive_message(request: Request):
                     text = value.get("message", {}).get("text")
 
                     if not text or not sender_id:
+                        continue
+
+                    # Skip messages sent by the bot itself (echo prevention)
+                    if PAGE_ID and sender_id == PAGE_ID:
+                        logger.info(f"Skipping echo from bot (sender {sender_id})")
                         continue
 
                     logger.info(f"Message from {sender_id}: {text}")
