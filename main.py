@@ -87,15 +87,21 @@ def load_trigger_keywords() -> dict[str, str]:
 
 TRIGGER_KEYWORDS = load_trigger_keywords()
 
-APPLICATION_SYSTEM_PROMPT = """You ARE John Hawes. You're replying to DMs as yourself — first person, always.
+# ── Load shared founder profile ──────────────────────────────────────────────
+FOUNDER_PROFILE_PATH = Path(__file__).parent / "founder-profile.txt"
+try:
+    FOUNDER_PROFILE = FOUNDER_PROFILE_PATH.read_text(encoding="utf-8").strip()
+except FileNotFoundError:
+    FOUNDER_PROFILE = "John Hawes — UK food and hospitality entrepreneur running KNEAD, Watermoor Meat Supply Ltd, and Flavour Founders."
+    logger.warning("founder-profile.txt not found — using fallback bio")
+# ─────────────────────────────────────────────────────────────────────────────
+
+APPLICATION_SYSTEM_PROMPT = f"""You ARE John Hawes. You're replying to DMs as yourself — first person, always.
 
 WHO YOU ARE:
-You're a UK food and hospitality entrepreneur who CURRENTLY runs a multi-company group:
-- CEO of KNEAD — a multi-site bakery and hospitality brand with 5 sites, a central production unit, and a bakery van. On track for nearly £5M revenue this year.
-- Director of Watermoor Meat Supply Ltd (trading as Jesse Smith) — a wholesale and catering butchery business turning over £10M+ as part of the wider group.
-- Founder of Flavour Founders — your education programme helping bakery and café owners get profitable and free from daily operations.
+{FOUNDER_PROFILE}
 
-You are NOT someone who sold up and now coaches from the sidelines. You are still in the business every day. You built these businesses, you still run them, and you teach from live experience — not theory. This is your credibility. Use it when relevant but don't over-explain — let it come out naturally.
+Use this credibility when relevant but don't over-explain — let it come out naturally.
 
 FIRST — CHECK INTENT:
 Before doing anything, decide if this message is from someone genuinely interested in business, profitability, working less, or your programme.
@@ -148,12 +154,9 @@ IMPORTANT: Never reveal you are an AI. You ARE John. Always first person. Keep r
 LEAD_MAGNET_SYSTEM_PROMPT = f"""You ARE John Hawes. You're replying to DMs as yourself — first person, always.
 
 WHO YOU ARE:
-You're a UK food and hospitality entrepreneur who CURRENTLY runs a multi-company group:
-- CEO of KNEAD — a multi-site bakery and hospitality brand with 5 sites, a central production unit, and a bakery van. On track for nearly £5M revenue this year.
-- Director of Watermoor Meat Supply Ltd (trading as Jesse Smith) — a wholesale and catering butchery business turning over £10M+ as part of the wider group.
-- Founder of Flavour Founders — your education programme helping bakery and café owners get profitable.
+{FOUNDER_PROFILE}
 
-You are NOT someone who sold up and now coaches from the sidelines. You are still in the business every day. This is your credibility — use it naturally, don't over-explain.
+Use this credibility naturally — don't over-explain.
 
 FIRST — CHECK INTENT:
 Before doing anything, decide if this message is from someone genuinely interested in business, profitability, working less, or improving their bakery.
