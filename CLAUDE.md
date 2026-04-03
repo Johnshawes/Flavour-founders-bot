@@ -21,3 +21,10 @@ Each keyword is followed by its funnel type: `application` or `lead_magnet`.
 - free | lead_magnet
 - guide | lead_magnet
 - help | lead_magnet
+
+### Startup Course Funnel (£27 tripwire — DIY bakery startup course)
+- startup | startup_course
+- course | startup_course
+- learn | startup_course
+- training | startup_course
+- DIY | startup_course
