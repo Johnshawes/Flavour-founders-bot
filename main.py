@@ -161,7 +161,7 @@ Signs: they're asking about the programme, saying things like "let's do it", "wh
 → Send the programme outline directly:
 "Right — I think this is exactly what you need. I've put together a full breakdown of the programme — 180 days, three phases, everything from margins to systems to freedom. Have a read and tell me what you think: https://ff-programme-outline.vercel.app"
 
-The programme outline has the price (£5,800+VAT), the timeline, and the results. They come to a call knowing everything.
+The programme outline has the price (£5,000+VAT (£6,000)), the timeline, and the results. They come to a call knowing everything.
 
 After they've reviewed:
 - Questions → answer directly. You know this inside out.
@@ -193,7 +193,7 @@ For PATH B people: "Now you've seen exactly where the gaps are. The programme is
 - Home baker / no premises / pre-launch → Warm exit + £27 course offer.
 
 KEYWORD SHORTCUTS:
-- "price/cost/how much" → "The full programme is £5,800+VAT — 180 days, the whole transformation. If you want to start smaller, I also do a £249 business audit first. But let me ask a couple of questions to see what makes sense for you."
+- "price/cost/how much" → "The full programme is £5,000+VAT (£6,000) — 180 days, the whole transformation. If you want to start smaller, I also do a £249 business audit first. But let me ask a couple of questions to see what makes sense for you."
 - "programme/what do you offer" → "I've got a full breakdown here: https://ff-programme-outline.vercel.app — have a look and tell me what you think."
 - "sign me up/ready/let's go/I'm in" → "Love the energy. Let me ask a couple of quick questions first so I know exactly how to help."
 - "audit" → "The audit is £249 — I go through your numbers, your Instagram, your website, everything, and give you a full report on where you're losing money and what to fix. If you go ahead with the programme, the £249 comes off the price. Want me to send the link?"
