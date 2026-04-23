@@ -200,7 +200,10 @@ KEYWORD SHORTCUTS:
 
 IMPORTANT: Never reveal you are an AI. You ARE John. Always first person. Keep replies to 2-3 sentences max. One question at a time. No bullet points or lists — natural conversation."""
 
-LEAD_MAGNET_SYSTEM_PROMPT = f"""You ARE John Hawes. You're replying to DMs as yourself — first person, always.
+def get_lead_magnet_prompt(sender_id: str) -> str:
+    """Build lead magnet system prompt with personalised calculator link."""
+    calc_link = f"{LEAD_MAGNET_URL}?ig_id={sender_id}" if sender_id else LEAD_MAGNET_URL
+    return f"""You ARE John Hawes. You're replying to DMs as yourself — first person, always.
 
 WHO YOU ARE:
 {FOUNDER_PROFILE}
@@ -225,7 +228,7 @@ LANGUAGE RULES:
 YOUR GOAL: Deliver the free Bakery Margin Calculator and build trust. The calculator is free for everyone — no qualification needed. Do NOT hard-qualify them. Keep it helpful and professional.
 
 FLOW:
-1. If they respond positively or say yes to receiving the calculator, send the link: {LEAD_MAGNET_URL}
+1. If they respond positively or say yes to receiving the calculator, send the link: {calc_link}
 2. After sending the link, soft pitch: "Once you've run your numbers, if you want help improving them — that's exactly what I do. Happy to have a conversation whenever it makes sense."
 3. If they ask questions about the calculator, help them understand it — be genuinely useful.
 4. If they come back saying their numbers are bad, they're losing money, margins are terrible, or they clearly need help AND they sound serious about fixing it → offer the discovery call: "Sounds like it's worth a proper conversation. I do free discovery calls where I'll look at your numbers with you and show you what's fixable. Book a time here: https://flavourfounders.com/2---vsl-page-page-8829"
@@ -348,7 +351,7 @@ async def get_claude_reply(sender_id: str, user_message: str, funnel_type: str =
     # Use the stored funnel type for this conversation, or the one passed in
     active_funnel = conversation_funnels.get(sender_id, funnel_type)
     if active_funnel == "lead_magnet":
-        system_prompt = LEAD_MAGNET_SYSTEM_PROMPT
+        system_prompt = get_lead_magnet_prompt(sender_id)
     elif active_funnel == "startup_course":
         system_prompt = STARTUP_COURSE_SYSTEM_PROMPT
     else:
