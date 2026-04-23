@@ -418,8 +418,14 @@ async def receive_message(request: Request):
                         logger.info(f"Skipping echo from bot (sender {sender_id})")
                         continue
 
+                    # Only respond to DMs from people already in a funnel
+                    # (triggered by a keyword comment on a CTA post)
+                    if sender_id not in conversation_funnels:
+                        logger.info(f"Ignoring unsolicited DM from {sender_id} — not in a funnel")
+                        continue
+
                     logger.info(f"Message from {sender_id}: {text}")
-                    funnel = conversation_funnels.get(sender_id, "application")
+                    funnel = conversation_funnels[sender_id]
                     reply = await get_claude_reply(sender_id, text, funnel_type=funnel)
                     if reply.strip().upper() != "IGNORE":
                         await send_dm(sender_id, reply)
@@ -436,8 +442,13 @@ async def receive_message(request: Request):
                 if message.get("is_echo") or not text or not sender_id:
                     continue
 
+                # Only respond to DMs from people already in a funnel
+                if sender_id not in conversation_funnels:
+                    logger.info(f"Ignoring unsolicited DM (legacy) from {sender_id} — not in a funnel")
+                    continue
+
                 logger.info(f"Message (legacy) from {sender_id}: {text}")
-                funnel = conversation_funnels.get(sender_id, "application")
+                funnel = conversation_funnels[sender_id]
                 reply = await get_claude_reply(sender_id, text, funnel_type=funnel)
                 if reply.strip().upper() != "IGNORE":
                     await send_dm(sender_id, reply)

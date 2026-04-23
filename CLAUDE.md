@@ -28,3 +28,4 @@ Each keyword is followed by its funnel type: `application` or `lead_magnet`.
 - learn | startup_course
 - training | startup_course
 - DIY | startup_course
+- Blueprint | startup_course
