@@ -543,7 +543,30 @@ async def reply_to_comment(comment_id: str, message: str):
         logger.error(f"Failed to reply to comment {comment_id}: {e}")
 
 
-async def send_dm(recipient_id: str, text: str, *, delay: bool = True):
+# Patterns Meta returns when we try to send a DM outside the 24h messaging window.
+# We treat these specially in the follow-up scheduler so the conversation gets
+# archived rather than retried indefinitely.
+_OUTSIDE_WINDOW_PATTERNS = (
+    "outside the allowed window",
+    "outside of the allowed window",
+    "outside of allowed window",
+    "outside the 24h window",
+    "(#10)",        # Meta error code 10 — application does not have permission
+    "2018278",      # subcode: messages sent outside allowed window
+)
+
+
+async def send_dm(recipient_id: str, text: str, *, delay: bool = True) -> dict:
+    """Send a DM via the Instagram Graph API.
+
+    Returns a result dict so callers can react to specific failure modes:
+        {
+            "ok": bool,
+            "window_expired": bool,   # True when Meta blocks for 24h-window reasons
+            "status": int,            # HTTP status (0 if the request itself failed)
+            "body": str,              # response body or exception text
+        }
+    """
     if delay:
         await human_delay()
     url = "https://graph.instagram.com/v21.0/me/messages"
@@ -552,10 +575,27 @@ async def send_dm(recipient_id: str, text: str, *, delay: bool = True):
     try:
         async with httpx.AsyncClient() as client:
             r = await client.post(url, json=payload, params={"access_token": ACCESS_TOKEN})
-            logger.info(f"IG API response: {r.status_code} {r.text[:200]}")
-            r.raise_for_status()
+        body = r.text or ""
+        logger.info(f"IG API response: {r.status_code} {body[:200]}")
+        if r.status_code == 200:
+            return {"ok": True, "window_expired": False, "status": 200, "body": body}
+        body_lower = body.lower()
+        window_expired = any(p in body_lower for p in _OUTSIDE_WINDOW_PATTERNS)
+        if window_expired:
+            logger.warning(
+                f"IG 24h window expired for {recipient_id} — message rejected by Meta"
+            )
+        else:
+            logger.error(f"IG send failed for {recipient_id}: {r.status_code} {body[:200]}")
+        return {
+            "ok": False,
+            "window_expired": window_expired,
+            "status": r.status_code,
+            "body": body,
+        }
     except Exception as e:
         logger.error(f"Failed to send DM to {recipient_id}: {e}")
+        return {"ok": False, "window_expired": False, "status": 0, "body": str(e)}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -806,12 +846,28 @@ async def run_follow_ups() -> dict:
             archived += 1
             continue
 
-        try:
-            await send_dm(sender_id, msg, delay=False)
-            sent += 1
-        except Exception as e:
-            logger.error(f"Follow-up send failed for {sender_id}: {e}")
+        result = await send_dm(sender_id, msg, delay=False)
+
+        # IG 24h messaging window has closed for this lead — Meta will keep
+        # rejecting follow-ups. Archive cleanly with a reason and move on.
+        if result.get("window_expired"):
+            upsert_conversation(sender_id, {
+                "archived": True,
+                "stage": "archived",
+                "next_follow_up_at": None,
+            })
+            logger.info(f"Archived {sender_id}: IG 24h window expired (count={count})")
+            archived += 1
             continue
+
+        # Other (transient) failure — leave the row alone so the next sweep retries.
+        if not result.get("ok"):
+            logger.error(
+                f"Follow-up send failed (transient) for {sender_id}, will retry next sweep"
+            )
+            continue
+
+        sent += 1
 
         # Append to history + schedule next
         history = (conv.get("message_history") or []) + [
