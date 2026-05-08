@@ -16,6 +16,7 @@ Follow-up sequence (qualified leads who go quiet after we replied):
 """
 
 import os
+import json
 import logging
 import hmac
 import hashlib
@@ -52,6 +53,15 @@ PROGRAMME_OUTLINE_URL = "https://ff-programme-outline.vercel.app"
 WHOP_PROGRAMME_URL    = "https://whop.com/checkout/plan_PNt9PcJaESP6i"
 BOOKING_URL           = "https://flavourfounders.com/3---schedule-page-page-3707"
 STARTUP_COURSE_URL    = "https://flavourfounders.thinkific.com/courses/start-up"
+
+# Whop integration — the programme deposit plan we count as a "closed sale".
+# Audit purchases (a different plan) are ignored on purpose.
+PROGRAMME_PLAN_ID    = "plan_PNt9PcJaESP6i"
+WHOP_WEBHOOK_SECRET  = os.environ.get("WHOP_WEBHOOK_SECRET", "")
+
+# Marker Claude appends when a lead matches the high-value criteria.
+# Stripped before the DM is sent — never seen by the lead.
+HIGH_VALUE_MARKER = "[HIGH_VALUE_LEAD]"
 # ─────────────────────────────────────────────────────────────────────────────
 
 anthropic_client = Anthropic(api_key=ANTHROPIC_API_KEY) if ANTHROPIC_API_KEY else None
@@ -303,7 +313,20 @@ Never end with "let me know what you think". Always force a binary choice:
 - 2–3 sentences per reply max (except the close, which can be longer — but ONE message)
 - One question at a time during qualification
 - No bullet points or lists — natural conversation
-- Never reveal you are an AI. You ARE John."""
+- Never reveal you are an AI. You ARE John.
+
+═══ HIGH-VALUE LEAD FLAG (system instruction — NEVER visible to the lead) ═══
+If their answers indicate ANY of:
+- Monthly revenue OVER £100K (so >£1.2M/year)
+- 3 or more retail locations / shops / sites
+- Multi-site or multi-brand operation
+... then append exactly this marker on a NEW LINE at the very END of your reply, AFTER everything else:
+{HIGH_VALUE_MARKER}
+
+The system strips this marker before sending — the lead NEVER sees it.
+This alerts John so he can step in personally on bigger fish.
+Only flag when the criteria are clearly stated by the lead. Never speculate or assume.
+Once flagged in a conversation, do not flag again — the system already knows."""
 
 
 def build_lead_magnet_prompt(sender_id: str) -> str:
@@ -562,6 +585,20 @@ async def get_claude_reply(sender_id: str, user_message: str) -> str:
                 messages=trimmed,
             )
             reply = response.content[0].text
+
+            # Strip the high-value marker if present, set DB flag.
+            if HIGH_VALUE_MARKER in reply:
+                reply = reply.replace(HIGH_VALUE_MARKER, "").strip()
+                if not conv.get("is_high_value"):
+                    try:
+                        upsert_conversation(sender_id, {
+                            "is_high_value": True,
+                            "high_value_flagged_at": _now_iso(),
+                        })
+                        logger.info(f"🔥 HIGH-VALUE LEAD flagged: {sender_id}")
+                    except Exception as e:
+                        logger.error(f"Failed to set high-value flag for {sender_id}: {e}")
+
             append_history(sender_id, "assistant", reply)
 
             # Detect outline-sent (so cron knows to fire the right follow-ups)
@@ -861,6 +898,132 @@ async def admin_run_follow_ups(x_admin_key: str | None = Header(default=None)):
     """Manually trigger a follow-up sweep (useful for testing)."""
     _check_admin(x_admin_key)
     return await run_follow_ups()
+
+
+@app.post("/admin/test-claude")
+async def admin_test_claude(request: Request, x_admin_key: str | None = Header(default=None)):
+    """Smoke-test Claude's reply for a given funnel + message + history.
+    Persists nothing, sends no IG DM. Used by test_bot.py."""
+    _check_admin(x_admin_key)
+    if not anthropic_client:
+        raise HTTPException(status_code=500, detail="Anthropic not configured")
+
+    body    = await request.json()
+    funnel  = body.get("funnel", "application")
+    message = body.get("message", "")
+    history = body.get("history", []) or []
+
+    system   = system_prompt_for(funnel, "test_user_smoke")
+    messages = list(history) + [{"role": "user", "content": message}]
+
+    response = anthropic_client.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=400,
+        system=system,
+        messages=messages,
+    )
+    raw = response.content[0].text
+    flagged = HIGH_VALUE_MARKER in raw
+    clean = raw.replace(HIGH_VALUE_MARKER, "").strip()
+    return {"reply": clean, "flagged_high_value": flagged, "raw": raw}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Whop webhook — sales tracker (does NOT touch the public-facing capacity number)
+# ─────────────────────────────────────────────────────────────────────────────
+def verify_whop_signature(body: bytes, signature_header: str) -> bool:
+    """Verify Whop webhook HMAC-SHA256 signature.
+    Tolerates the secret being sent as raw hex, 'v1=hex', or 'sha256=hex'."""
+    if not WHOP_WEBHOOK_SECRET or not signature_header:
+        return False
+    expected = hmac.new(
+        WHOP_WEBHOOK_SECRET.encode(),
+        body,
+        hashlib.sha256,
+    ).hexdigest()
+    sig = signature_header.strip().lower()
+    for candidate in (expected, f"v1={expected}", f"sha256={expected}"):
+        if hmac.compare_digest(candidate.lower(), sig):
+            return True
+    return False
+
+
+def _bump_closed_won() -> int | None:
+    """Increment closed_won_total in bot_config. Returns the new value, or None on failure."""
+    if not supabase:
+        return None
+    try:
+        res = supabase.table("bot_config").select("value").eq("key", "closed_won_total").execute()
+        current = int(res.data[0]["value"]) if res.data else 0
+        new_val = current + 1
+        supabase.table("bot_config").upsert({
+            "key": "closed_won_total",
+            "value": str(new_val),
+            "updated_at": _now_iso(),
+        }).execute()
+        logger.info(f"closed_won_total: {current} -> {new_val}")
+        return new_val
+    except Exception as e:
+        logger.error(f"Failed to bump closed_won_total: {e}")
+        return None
+
+
+_PURCHASE_EVENTS = (
+    "payment.succeeded", "payment_succeeded",
+    "membership.went_valid", "membership_went_valid",
+    "membership.created", "membership_created",
+)
+
+
+@app.post("/webhook/whop")
+async def whop_webhook(request: Request):
+    """Receive Whop purchase webhooks. Filters for the programme plan only.
+    On a verified programme purchase, bumps closed_won_total in bot_config.
+    Does NOT modify current_clients_this_month — that stays under manual control."""
+    body = await request.body()
+    sig_header = (
+        request.headers.get("whop-signature")
+        or request.headers.get("x-whop-signature")
+        or request.headers.get("signature")
+        or ""
+    )
+
+    logger.info(f"Whop webhook received. Sig present: {bool(sig_header)}. Body[:200]: {body[:200]}")
+
+    if WHOP_WEBHOOK_SECRET:
+        if not verify_whop_signature(body, sig_header):
+            logger.warning("Whop signature verification failed")
+            raise HTTPException(status_code=403, detail="Invalid signature")
+    else:
+        logger.warning("WHOP_WEBHOOK_SECRET not set — skipping signature verification (UNSAFE)")
+
+    try:
+        data = json.loads(body)
+    except Exception as e:
+        logger.error(f"Whop webhook JSON parse error: {e}")
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    # Defensive plan_id extraction — Whop nests it differently across event types
+    payload = data.get("data", data)
+    plan_id = (
+        payload.get("plan_id")
+        or (payload.get("plan") or {}).get("id")
+        or (payload.get("membership") or {}).get("plan_id")
+    )
+    event = (data.get("action") or data.get("event") or data.get("type") or "").lower()
+
+    logger.info(f"Whop event: '{event}', plan_id: '{plan_id}'")
+
+    if plan_id != PROGRAMME_PLAN_ID:
+        logger.info(f"Whop ignored — not the programme plan ({plan_id})")
+        return {"status": "ignored", "reason": "wrong plan", "plan_id": plan_id}
+
+    if event and not any(e in event for e in _PURCHASE_EVENTS):
+        logger.info(f"Whop ignored — not a purchase event ({event})")
+        return {"status": "ignored", "reason": "not a purchase event", "event": event}
+
+    new_total = _bump_closed_won()
+    return {"status": "ok", "closed_won_total": new_total}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

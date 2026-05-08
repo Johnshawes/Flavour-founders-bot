@@ -9,8 +9,14 @@ follow-up scheduler can do its job.
 
 ---
 
-## What's New (v2)
+## What's New
 
+**v2.1 (latest):**
+- **Whop webhook** — auto-tracks programme purchases as `closed_won_total` (sales tracker, doesn't touch the public capacity counter)
+- **High-value lead detection** — bot flags leads who say £100K+/month or 3+ shops; Command Centre shows them in a "🔥 High-value leads" section so you can step in personally
+- **Smoke-test CLI** — `python test_bot.py "your message"` to dry-run the bot's reply without sending real DMs
+
+**v2:**
 - **Persistent state** — conversations stored in Supabase, not RAM
 - **3-question qualification** (was 6) — faster, sharper, ends with a belief-builder
 - **Value anchor** before the programme outline link (no more cold price reveals)
@@ -25,10 +31,12 @@ follow-up scheduler can do its job.
 
 | File | Purpose |
 |------|---------|
-| `main.py` | The bot — webhook, Claude, persistence, scheduler |
-| `schema.sql` | Supabase tables — run once in the SQL editor |
+| `main.py` | The bot — webhook, Claude, persistence, scheduler, Whop endpoint |
+| `schema.sql` | Initial Supabase tables |
+| `schema_v2.sql` | v2.1 migration — high-value flag + closed_won counter |
 | `case_studies.txt` | Real client wins, used for social proof + follow-ups |
 | `founder-profile.txt` | Bio injected into every system prompt |
+| `test_bot.py` | Smoke-test CLI — pipe a fake message, get the bot's reply |
 | `CLAUDE.md` | Trigger keywords (edit this to change comment triggers) |
 | `requirements.txt` | Python deps |
 | `Procfile` | Railway run command |
@@ -157,6 +165,87 @@ on every reply and picks one of these lines:
 | 100% | "I'm full this month. Next opening's the start of next month. Happy to hold a spot." |
 
 The bot also uses these in the 7-day follow-up automatically.
+
+---
+
+## Whop Webhook (Sales Tracking)
+
+The bot exposes `POST /webhook/whop`. When Whop fires a successful purchase event for the
+programme plan (`plan_PNt9PcJaESP6i`), the bot increments `closed_won_total` in
+`bot_config`. Audit purchases (a different plan) are ignored.
+
+**Set up:**
+
+1. **Run the schema migration** in Supabase SQL editor (one-time, idempotent):
+   ```
+   ALTER TABLE instagram_conversations
+     ADD COLUMN IF NOT EXISTS is_high_value BOOLEAN NOT NULL DEFAULT FALSE;
+   ALTER TABLE instagram_conversations
+     ADD COLUMN IF NOT EXISTS high_value_flagged_at TIMESTAMPTZ;
+   INSERT INTO bot_config (key, value) VALUES ('closed_won_total', '0')
+     ON CONFLICT (key) DO NOTHING;
+   ```
+   (Or paste `schema_v2.sql`.)
+
+2. **In your Whop dashboard:**
+   - Settings → Developer → Webhooks (path varies; look for "Webhooks")
+   - Add a new webhook with URL: `https://web-production-3aebb.up.railway.app/webhook/whop`
+   - Subscribe to: `payment.succeeded` (or `membership.went_valid` / `membership.created` —
+     bot accepts any of them)
+   - Copy the **signing secret** Whop generates
+
+3. **Add to Railway:**
+   ```
+   WHOP_WEBHOOK_SECRET=<the secret from step 2>
+   ```
+
+4. **Test:** make a real purchase or use Whop's "Send test event". Check Railway logs for
+   `closed_won_total: N -> N+1`. The Insta Bot dashboard `/instabot` will show the new
+   "Closed sales" KPI.
+
+**Note:** the webhook does NOT modify `current_clients_this_month`. That counter is under
+manual control. The Whop event only bumps the all-time sales tracker.
+
+---
+
+## High-Value Lead Flag
+
+When a lead's qualification answers indicate they do **£100K+/month** OR run **3+ shops/sites**,
+Claude appends `[HIGH_VALUE_LEAD]` to its reply. The bot strips it before sending the DM
+and sets `is_high_value=true` on the conversation row.
+
+These leads show up in a "🔥 High-value leads" section at the top of the
+`/instabot` dashboard so you can step in personally.
+
+**To change the threshold:** edit `build_application_prompt` in `main.py`, look for the
+`HIGH-VALUE LEAD FLAG` block.
+
+---
+
+## Smoke-Test the Bot
+
+Test the bot's Claude responses without sending real DMs:
+
+```
+pip install httpx python-dotenv
+export ADMIN_KEY=<your admin key>
+python test_bot.py "I run a bakery in Bristol, doing £30K/month"
+```
+
+Multi-turn (alternating user → bot → user → … ending with user):
+```
+python test_bot.py --history \
+  "I run a bakery" \
+  "Nice — how long?" \
+  "5 years, doing £150K/month across 4 shops"
+```
+
+Different funnel:
+```
+python test_bot.py --funnel lead_magnet "yes please send the calculator"
+```
+
+Output shows the bot's reply and flags `🔥 FLAGGED AS HIGH-VALUE LEAD` if appropriate.
 
 ---
 
