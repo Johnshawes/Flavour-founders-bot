@@ -900,6 +900,33 @@ async def admin_run_follow_ups(x_admin_key: str | None = Header(default=None)):
     return await run_follow_ups()
 
 
+@app.post("/admin/sales/increment")
+async def admin_sales_increment(x_admin_key: str | None = Header(default=None)):
+    """Manually bump closed_won_total — call when you close a programme sale.
+    Use this if you don't want to wire up the Whop webhook."""
+    _check_admin(x_admin_key)
+    new_val = _bump_closed_won()
+    if new_val is None:
+        raise HTTPException(status_code=500, detail="Failed to update closed_won_total")
+    return {"closed_won_total": new_val}
+
+
+@app.post("/admin/sales/set")
+async def admin_sales_set(request: Request, x_admin_key: str | None = Header(default=None)):
+    """Set closed_won_total to a specific value. Body: {\"value\": int}"""
+    _check_admin(x_admin_key)
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase not configured")
+    body = await request.json()
+    value = int(body.get("value", 0))
+    supabase.table("bot_config").upsert({
+        "key": "closed_won_total",
+        "value": str(value),
+        "updated_at": _now_iso(),
+    }).execute()
+    return {"closed_won_total": value}
+
+
 @app.post("/admin/test-claude")
 async def admin_test_claude(request: Request, x_admin_key: str | None = Header(default=None)):
     """Smoke-test Claude's reply for a given funnel + message + history.
