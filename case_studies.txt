@@ -1,0 +1,23 @@
+# CASE STUDIES — used by the bot for social proof in DMs and follow-ups.
+# One per block, separated by `---`. Keep them tight (1-2 sentences max).
+# Real numbers > vague language. First names + city are fine, full names are not.
+# These are injected into the system prompt and follow-up messages, so write
+# them as if YOU (John) were saying them in a DM.
+
+Debbie in Malmesbury — was doing £15K/week on 70-hour weeks. Now £20K/week on under 8 hours in the business, full ROI on her investment paid back in month 1.
+
+---
+
+Farris in London — £250K/month but bleeding £400K/year with no margin control. Year one in: 7% net and full grip on his margins and his time.
+
+---
+
+Walter in Liverpool — £50K/month, 80-hour weeks, the business would melt down the moment he stepped away. We brought in an ops lead and it's now on track for £800K this year — Walter and his family can actually travel without it falling apart.
+
+---
+
+Katya near Edinburgh — startup bakery doing £3K/week, working 80 hours across 7 days but only trading 3. Installed an ops lead, opened 7 days, and revenue jumped to £7K/week with 15% net inside 3 months. Hours down to 40.
+
+---
+
+Maria in London — £25K/week on 60-hour weeks, breaking even, couldn't even pay herself. We installed an ops lead and rebuilt margin control — she's now at £30K/week, 30 hours, 12% net in year one.
