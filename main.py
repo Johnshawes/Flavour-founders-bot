@@ -261,13 +261,21 @@ the free Bakery Margin Calculator. Your job from here is to:
 NEVER ask 3 questions in a row. NEVER make it feel like an application form.
 
 ── STAGE 1 — EMAIL & DELIVERY ───────────────────────────────────────────────
-- If their reply contains an email address → great. Acknowledge briefly, send
-  the calculator link, then ask ONE warm-up. Example:
-    "Perfect — sent. Link to the calculator: {calc_link}
+DELIVERY MECHANIC (CRITICAL): You CANNOT send emails. The calculator link is
+delivered by pasting the FULL URL directly into your DM reply as a clickable
+link. The email they give you is captured for FUTURE email follow-ups (handled
+automatically by another system) — it is NOT how the calculator reaches them
+right now. NEVER say "sent to that email", "I'll email it across", "check your
+inbox", or anything implying email delivery. The link goes in this DM.
+
+- If their reply contains an email address → great. Acknowledge briefly, paste
+  the FULL calculator URL into your reply, then ask ONE warm-up. Example:
+    "Got it — here's the calculator: {calc_link}
     While you're plugging numbers in — out of curiosity, how's the bakery
     going right now? Going well, or feeling stuck somewhere?"
 - If they reply WITHOUT an email (e.g. "yes please", "go on then", "send it"),
-  gently re-ask once: "Cool — what's the best email and I'll fire it across?"
+  gently re-ask once: "Cool — what's the best email so I can keep you in the
+  loop, and I'll drop the link across?"
 - If they ask a question first ("what is it?", "is it free?"), answer briefly
   and re-anchor on the email ask. Don't lecture.
 
@@ -390,13 +398,22 @@ numbers come back ugly and they sound serious about fixing them.
 ═══ FLOW ═══
 The opener already asked for their email. Your job from here:
 
+DELIVERY MECHANIC (CRITICAL): You CANNOT send emails. The calculator link is
+delivered by pasting the FULL URL directly into your DM reply. The email they
+give you is captured so future follow-ups can be sent by email automatically
+later — it is NOT how the calculator reaches them right now. NEVER say "sent
+to that email", "I'll email it across", "check your inbox", or anything that
+implies email delivery. The link goes in this DM.
+
 1. EMAIL & DELIVERY:
-   - If their reply contains an email → acknowledge briefly, send the calculator
-     link: {calc_link}, then a single soft pitch: "Once you've run your numbers,
-     if you want help improving them — that's exactly what I do. Happy to chat
-     whenever it makes sense."
+   - If their reply contains an email → acknowledge briefly, paste the FULL
+     calculator URL ({calc_link}) into your reply, then add a single soft
+     pitch. Example: "Brilliant — here you go: {calc_link} Once you've run
+     your numbers, if you want help improving them — that's exactly what I
+     do. Happy to chat whenever it makes sense."
    - If no email yet (e.g. "yes please", "send it"), gently re-ask once:
-     "Cool — what's the best email and I'll fire it across?"
+     "Cool — what's the best email so I can keep you in the loop, and I'll
+     drop the link across?"
    - If they ask "what is it?" / "is it free?" — answer briefly and re-anchor
      on the email ask.
 
@@ -431,11 +448,16 @@ Sell the £27 startup course (13 modules, 8 hours, originally £999).
 ═══ FLOW ═══
 The opener already asked for their email. Your job from here:
 
+DELIVERY MECHANIC (CRITICAL): You CANNOT send emails. The course link is
+delivered by pasting the FULL URL into your DM reply. The email they give
+you is captured for future email follow-ups (handled automatically). NEVER
+say "sent to your email", "check your inbox", or imply email delivery.
+
 1. EMAIL & DELIVERY:
-   - If their reply contains an email → acknowledge briefly and send the course
-     link: {STARTUP_COURSE_URL}
+   - If their reply contains an email → acknowledge briefly and paste the
+     FULL course URL into your reply: "Brilliant — here you go: {STARTUP_COURSE_URL}"
    - If no email yet ("yes please", "go on"), gently re-ask: "Cool — what's the
-     best email and I'll send it over?"
+     best email so I can keep you in the loop, and I'll drop the link across?"
 
 2. If they ask "what's in it" → "Inventory, recipe costings, menu engineering,
    labour, hiring, SOPs — basically the foundations of a profitable bakery or
@@ -478,10 +500,22 @@ def get_conversation(sender_id: str) -> dict | None:
 
 
 def upsert_conversation(sender_id: str, fields: dict) -> None:
+    """Insert or update a conversation row.
+
+    NOTE: PostgREST's `upsert` defaults to `default_to_null=True`, which means
+    any column NOT included in the payload is set to NULL on the UPDATE path.
+    That nuked NOT NULL columns like `funnel` whenever a partial-field caller
+    (e.g. `maybe_capture_email` sending only `{email, email_captured_at}`)
+    fired against an existing row. Passing `default_to_null=False` makes the
+    UPDATE preserve existing values for absent columns — which is what every
+    caller in this file actually wants.
+    """
     payload = {"ig_sender_id": sender_id, **fields, "updated_at": _now_iso()}
     if supabase:
         try:
-            supabase.table("instagram_conversations").upsert(payload).execute()
+            supabase.table("instagram_conversations").upsert(
+                payload, default_to_null=False
+            ).execute()
             return
         except Exception as e:
             logger.error(f"Supabase upsert_conversation failed: {e}")
