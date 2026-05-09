@@ -1392,8 +1392,10 @@ async def _shutdown():
 async def health():
     state = get_capacity_state() if supabase else None
     # Surface integration wiring at runtime so we don't have to grep Railway
-    # logs to find out a redeploy didn't pick up an env var. All booleans —
-    # never leak the actual key values from this endpoint.
+    # logs to find out a redeploy didn't pick up an env var. We also expose
+    # the LENGTH of each secret (never the value) — Railway's UI masks vars
+    # the same way whether they're 0 chars or 100, so a length probe is the
+    # only way to tell from outside whether a var is genuinely set.
     return {
         "status": "Flavour Founders Bot is running 🚀",
         "supabase":   bool(supabase),
@@ -1401,5 +1403,13 @@ async def health():
         "instagram":  bool(ACCESS_TOKEN and PAGE_ID),
         "ghl":        bool(GHL_API_KEY and GHL_LOCATION_ID),
         "whop":       bool(WHOP_WEBHOOK_SECRET),
+        "lens": {
+            "ghl_api_key":     len(GHL_API_KEY),
+            "ghl_location_id": len(GHL_LOCATION_ID),
+            "ghl_base_url":    len(GHL_BASE_URL),
+            "instagram_token": len(ACCESS_TOKEN),
+            "instagram_page":  len(PAGE_ID),
+            "anthropic_key":   len(ANTHROPIC_API_KEY),
+        },
         "capacity":   state,
     }
