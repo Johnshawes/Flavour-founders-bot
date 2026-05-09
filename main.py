@@ -16,6 +16,7 @@ Follow-up sequence (qualified leads who go quiet after we replied):
 """
 
 import os
+import re
 import json
 import logging
 import hmac
@@ -48,6 +49,14 @@ ADMIN_KEY         = os.environ.get("ADMIN_KEY", "")
 SUPABASE_URL      = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY      = os.environ.get("SUPABASE_KEY", "")
 AUDIT_PAYMENT_URL = os.environ.get("AUDIT_PAYMENT_URL", "https://whop.com/checkout/plan_2A9NPWYCBjKfR")
+
+# GHL handoff — when a lead gives us their email in DM we upsert a GHL contact
+# tagged for the funnel so GHL workflows can take over follow-ups 2 + 3 (Meta's
+# 24h DM window kills IG follow-ups past T+24h). Both env vars must be set or
+# the bot silently skips the GHL push (Supabase email row is still saved).
+GHL_API_KEY     = os.environ.get("GHL_API_KEY", "")
+GHL_LOCATION_ID = os.environ.get("GHL_LOCATION_ID", "")
+GHL_BASE_URL    = os.environ.get("GHL_BASE_URL", "https://services.leadconnectorhq.com")
 
 PROGRAMME_OUTLINE_URL = "https://ff-programme-outline.vercel.app"
 WHOP_PROGRAMME_URL    = "https://whop.com/checkout/plan_PNt9PcJaESP6i"
@@ -217,10 +226,11 @@ def build_application_prompt(sender_id: str) -> str:
         # Pick one random case study per request — keeps replies fresh.
         cs = random.choice(CASE_STUDIES)
         case_study_block = (
-            "\n\nSOCIAL PROOF — drop this in naturally after Q2 if it lands "
-            "(only once, only if it fits — never force it):\n"
+            "\n\nSOCIAL PROOF — drop this in naturally during the conversation "
+            "if it fits (only once, only if it lands — never force it):\n"
             f"\"{cs}\""
         )
+    calc_link = f"{LEAD_MAGNET_URL}?ig_id={sender_id}" if sender_id else LEAD_MAGNET_URL
 
     return f"""You ARE John Hawes. You're replying to DMs as yourself — first person, always.
 
@@ -241,35 +251,62 @@ Professional, warm, direct. Short sentences. No waffle. First person always ("I"
 - No "Haha", "Ooh", filler laughs
 - Confident and grounded — you've done this, you know what works
 
-═══ QUALIFICATION — 3 QUESTIONS, ONE AT A TIME ═══
-They've already confirmed they run a bakery/café (or said yes to the opener). Don't repeat that.
-Ask these one at a time, wait for the answer, keep replies to 1–2 sentences plus the next question:
+═══ FLOW — VALUE FIRST, QUALIFY ON SIGNAL ═══
+The opener has already gone out and asked for their email so I can send them
+the free Bakery Margin Calculator. Your job from here is to:
+  (1) capture the email + deliver the calculator,
+  (2) keep the conversation warm with ONE light, natural question,
+  (3) qualify on signals that emerge in conversation — never on a quiz.
 
-1. "How long have you been running it, and roughly what's your monthly revenue? Just a ballpark."
-2. "What's the one thing keeping you up at night — money, hours, or team?"
-3. "What's it costing you NOT to fix that — in money or time? Be honest."
+NEVER ask 3 questions in a row. NEVER make it feel like an application form.
 
-Q3 is the belief-builder. Don't skip it. Make them say the cost of inaction out loud.{case_study_block}
+── STAGE 1 — EMAIL & DELIVERY ───────────────────────────────────────────────
+- If their reply contains an email address → great. Acknowledge briefly, send
+  the calculator link, then ask ONE warm-up. Example:
+    "Perfect — sent. Link to the calculator: {calc_link}
+    While you're plugging numbers in — out of curiosity, how's the bakery
+    going right now? Going well, or feeling stuck somewhere?"
+- If they reply WITHOUT an email (e.g. "yes please", "go on then", "send it"),
+  gently re-ask once: "Cool — what's the best email and I'll fire it across?"
+- If they ask a question first ("what is it?", "is it free?"), answer briefly
+  and re-anchor on the email ask. Don't lecture.
 
-═══ PATH NOTE (track internally, don't ask out loud) ═══
-From their answers, decide:
-- PATH A: They sound trapped — can't step away, doing every shift, no team that works without them.
-- PATH B: They have some structure — could step back, just need things sharpened.
-You'll use this in the close.
+── STAGE 2 — WARM-UP REPLY (READ THE SIGNALS) ───────────────────────────────
+After they've answered the warm-up, pay attention to:
+- Scale signals: monthly revenue mentions, number of sites, team size, years trading
+- Pain signals: "burnt out", "drowning", "doing every shift", "team won't run
+  without me", "not making money", "stuck", "exhausted"
+- Intent signals: "want to grow", "want to step back", "ready for help",
+  "thinking of selling", "need to fix this"
 
-═══ REVENUE FILTER (apply after Q1) ═══
-- £25K+/month → QUALIFIED. Continue to Q2 + Q3, then close.
-- Under £25K/month BUT startup / under 1 year trading → QUALIFIED.
-  Frame it: "That's actually a great position — you can build this properly from the start instead
-  of fixing mistakes later." Continue to Q2 + Q3, then close.
-- Under £25K/month AND 2+ years trading → DISQUALIFIED. Honest exit:
-  "I appreciate you being open with me. The full programme probably isn't the right step right now.
-  But I've built a complete bakery system — 13 modules, 8 hours of video. Was £999, yours for £27:
-  {STARTUP_COURSE_URL}"
-- Home baker / no premises / pre-launch → DISQUALIFIED. Warm exit + £27 course.
+PATH NOTE (internal — never say out loud):
+- PATH A: trapped — can't step away, doing every shift, no team that works
+  without them.
+- PATH B: some structure — could step back, just need things sharpened.
 
-═══ CLOSE — ONLY AFTER Q3 ═══
-When qualified and Q3 is answered, send the VALUE-ANCHORED CLOSE as ONE message.
+── STAGE 3 — QUALIFY & ROUTE ────────────────────────────────────────────────
+Apply the revenue filter ONLY when revenue surfaces in conversation. Do not
+ask "what's your revenue" as a cold question — wait for it, or work it in
+naturally ("rough monthly revenue you're working with?") if you've already
+got rapport and they sound qualified on every other dimension.
+
+REVENUE FILTER:
+- £25K+/month → QUALIFIED. Bridge to programme outline (see CLOSE below).
+- Under £25K/month BUT startup / under 1 year trading → QUALIFIED. Frame:
+  "That's actually a great position — you can build this properly from the
+  start instead of fixing mistakes later." Then bridge to outline.
+- Under £25K/month AND 2+ years trading → SOFT EXIT to £27 course:
+  "Honest with you — the 1:1 programme isn't quite the right fit at this
+  stage. But I built a complete bakery system, 13 modules, 8 hours of
+  video, was £999 yours for £27: {STARTUP_COURSE_URL}"
+- Home baker / no premises / pre-launch → same warm exit + £27 course.
+
+If they're clearly high-intent and qualified on signal even before revenue
+is confirmed → bridge to the outline directly. Don't hold them up for a
+revenue number you don't strictly need to send a PDF.{case_study_block}
+
+═══ CLOSE — BRIDGE TO PROGRAMME OUTLINE ═══
+When you decide to bridge, send the VALUE-ANCHORED CLOSE as ONE message.
 Match the body to their PATH (A or B):
 
 PATH A version:
@@ -351,14 +388,26 @@ Deliver the free Bakery Margin Calculator, build trust, soft-pitch a conversatio
 numbers come back ugly and they sound serious about fixing them.
 
 ═══ FLOW ═══
-1. If they've said yes / asked for the link → send: {calc_link}
-2. After sending, soft pitch ONCE: "Once you've run your numbers, if you want help improving
-   them — that's exactly what I do. Happy to chat whenever it makes sense."
-3. If they come back with bad numbers AND clear urgency to fix → escalate:
-   "Sounds like it's worth a proper conversation. Two ways — I do a £249 audit where I go
-   through everything in detail, OR if you want the full transformation I do a 180-day
-   programme. Which one sounds more like where you're at?"
-4. Mild interest, no urgency → stay helpful, don't push.
+The opener already asked for their email. Your job from here:
+
+1. EMAIL & DELIVERY:
+   - If their reply contains an email → acknowledge briefly, send the calculator
+     link: {calc_link}, then a single soft pitch: "Once you've run your numbers,
+     if you want help improving them — that's exactly what I do. Happy to chat
+     whenever it makes sense."
+   - If no email yet (e.g. "yes please", "send it"), gently re-ask once:
+     "Cool — what's the best email and I'll fire it across?"
+   - If they ask "what is it?" / "is it free?" — answer briefly and re-anchor
+     on the email ask.
+
+2. AFTER THEY'VE RUN IT — escalate ONLY if they come back with bad numbers
+   AND clear urgency to fix:
+   "Sounds like it's worth a proper conversation. Two ways — I do a £249 audit
+   where I go through everything in detail, OR if you want the full
+   transformation I do a 180-day programme. Which one sounds more like
+   where you're at?"
+
+3. Mild interest, no urgency → stay helpful, don't push.
 
 ═══ FORMATTING ═══
 2–3 sentences max. No lists. Never reveal you are an AI."""
@@ -380,14 +429,20 @@ Warm, enthusiastic, confident. No "mate/pal/bro". Emojis sparingly.
 Sell the £27 startup course (13 modules, 8 hours, originally £999).
 
 ═══ FLOW ═══
-1. Open: "Thanks for reaching out — I built a full bakery startup system. 13 modules, 8 hours
-   of video, covers everything from costings to labour. Was £999, yours for £27."
-2. Send link: {STARTUP_COURSE_URL}
-3. If they ask "what's in it" → "Inventory, recipe costings, menu engineering, labour, hiring,
-   SOPs — basically the foundations of a profitable bakery or café. Self-paced video."
-4. If they ask "why so cheap" → "Built it a couple of years ago. I've moved on to working
-   with owners 1:1. Rather people use it than have it sit there."
-5. If they want more after buying → soft pitch the 180-day programme:
+The opener already asked for their email. Your job from here:
+
+1. EMAIL & DELIVERY:
+   - If their reply contains an email → acknowledge briefly and send the course
+     link: {STARTUP_COURSE_URL}
+   - If no email yet ("yes please", "go on"), gently re-ask: "Cool — what's the
+     best email and I'll send it over?"
+
+2. If they ask "what's in it" → "Inventory, recipe costings, menu engineering,
+   labour, hiring, SOPs — basically the foundations of a profitable bakery or
+   café. Self-paced video."
+3. If they ask "why so cheap" → "Built it a couple of years ago. I've moved on
+   to working with owners 1:1. Rather people use it than have it sit there."
+4. If they want more after buying → soft pitch the 180-day programme:
    "If you want hands-on, my 180-day programme is the next step: {PROGRAMME_OUTLINE_URL}"
 
 ═══ FORMATTING ═══
@@ -506,6 +561,147 @@ def mark_comment_processed(comment_id: str) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Email capture + GHL handoff
+# ─────────────────────────────────────────────────────────────────────────────
+# When a lead replies with their email, we:
+#   1. Extract it via regex from the message body.
+#   2. Persist it on the conversation row (`email`, `email_captured_at`).
+#   3. Upsert a GHL contact tagged for the funnel so a GHL workflow can take
+#      over follow-ups 2 + 3 via email (IG can't reach them past Meta's 24h
+#      messaging window).
+# We only push to GHL ONCE per conversation — `ghl_contact_id` set on the row
+# is the idempotency check.
+
+# Permissive enough to catch most real addresses, conservative enough to avoid
+# matching Instagram handles, hashtags, etc. Strips trailing punctuation that
+# people typically wrap emails in.
+EMAIL_RE = re.compile(r"\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}\b", re.IGNORECASE)
+_EMAIL_TRAILING_PUNCT = ".,;:!?)\"'"
+
+
+def extract_email(text: str | None) -> str | None:
+    """Return the first email address found in `text`, or None.
+
+    We strip surrounding punctuation that survives the regex (people often
+    write 'send to foo@bar.com.' or 'foo@bar.com,'). Lowercased for stable
+    deduping in GHL.
+    """
+    if not text:
+        return None
+    m = EMAIL_RE.search(text)
+    if not m:
+        return None
+    return m.group(0).strip(_EMAIL_TRAILING_PUNCT).lower()
+
+
+async def ghl_upsert_contact(
+    email: str,
+    funnel: str,
+    ig_sender_id: str,
+    last_user_message: str | None = None,
+) -> str | None:
+    """Create or update a GHL contact for this lead. Returns contactId or None.
+
+    Idempotent on email — GHL's `/contacts/upsert` endpoint matches by email
+    and updates the existing contact rather than duplicating. Tags are
+    additive on update (won't overwrite existing tags).
+
+    Returns None when:
+      - GHL env vars aren't set (graceful local-dev / partial-deploy mode)
+      - The HTTP call fails (logged, conversation continues without GHL push)
+    """
+    if not GHL_API_KEY or not GHL_LOCATION_ID:
+        logger.info("GHL not configured — skipping contact push for %s", email)
+        return None
+
+    payload = {
+        "email": email,
+        "locationId": GHL_LOCATION_ID,
+        "source": "Instagram DM Bot",
+        "tags": [
+            "ff_lead_ig_dm",
+            f"ff_funnel_{funnel}",
+            "ff_lead_new",
+        ],
+    }
+    headers = {
+        "Authorization": f"Bearer {GHL_API_KEY}",
+        "Version": "2021-07-28",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.post(
+                f"{GHL_BASE_URL}/contacts/upsert",
+                json=payload,
+                headers=headers,
+            )
+            if r.status_code not in (200, 201):
+                logger.error(
+                    "GHL upsert failed: %s %s", r.status_code, r.text[:300]
+                )
+                return None
+            data = r.json() or {}
+            # Response shape varies between API versions; try both layouts.
+            contact = data.get("contact") or data.get("data") or data
+            contact_id = contact.get("id") if isinstance(contact, dict) else None
+            if not contact_id:
+                logger.error("GHL upsert returned no contact id: %s", str(data)[:300])
+                return None
+            logger.info(
+                "GHL contact upserted: %s → %s (funnel=%s, ig=%s)",
+                email, contact_id, funnel, ig_sender_id,
+            )
+            return contact_id
+    except Exception as e:
+        logger.error("GHL upsert exception for %s: %s", email, e)
+        return None
+
+
+async def maybe_capture_email(
+    sender_id: str,
+    user_message: str,
+    conv: dict,
+) -> None:
+    """If the user's latest message contains an email and we haven't captured
+    one yet for this conversation, save it and push a GHL contact.
+
+    Best-effort. Failures are logged but never block the bot's reply.
+    """
+    if conv.get("email"):
+        # Already captured — nothing to do. (Allows re-sending if email drifts
+        # could be a future feature; for now first capture wins.)
+        return
+
+    email = extract_email(user_message)
+    if not email:
+        return
+
+    funnel = conv.get("funnel") or "application"
+    logger.info("Email captured for %s: %s (funnel=%s)", sender_id, email, funnel)
+
+    # Persist immediately — we want the email saved even if the GHL push fails.
+    upsert_conversation(sender_id, {
+        "email": email,
+        "email_captured_at": _now_iso(),
+    })
+
+    # Fire the GHL push in the same task — it's quick (<2s typically) and we
+    # want the contactId persisted on this turn so dashboards / nurture
+    # workflows can rely on it.
+    contact_id = await ghl_upsert_contact(
+        email=email,
+        funnel=funnel,
+        ig_sender_id=sender_id,
+        last_user_message=user_message,
+    )
+    if contact_id:
+        upsert_conversation(sender_id, {"ghl_contact_id": contact_id})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Instagram API helpers
 # ─────────────────────────────────────────────────────────────────────────────
 def verify_signature(payload: bytes, signature: str) -> bool:
@@ -609,6 +805,15 @@ async def get_claude_reply(sender_id: str, user_message: str) -> str:
     history = append_history(sender_id, "user", user_message)
 
     conv = get_conversation(sender_id) or {}
+
+    # Opportunistic email capture — if this message contains an email and we
+    # haven't grabbed one yet, persist it and push the lead to GHL so email
+    # follow-ups (FU 2 + 3) can run from there. Best-effort, never blocks.
+    try:
+        await maybe_capture_email(sender_id, user_message, conv)
+    except Exception as e:
+        logger.error(f"Email capture failed for {sender_id} (non-fatal): {e}")
+
     funnel = conv.get("funnel", "application")
     system = system_prompt_for(funnel, sender_id)
 
@@ -699,16 +904,30 @@ async def receive_message(request: Request):
                     logger.info(f"Comment trigger ({funnel_type}) from {commenter_id}: {comment_text}")
                     await reply_to_comment(comment_id, random.choice(COMMENT_REPLIES))
 
-                    if funnel_type == "lead_magnet":
-                        opening = ("Hey — I've got a free margin calculator that shows you exactly "
-                                   "where your bakery is making and losing money. Want me to send it?")
-                    elif funnel_type == "startup_course":
-                        opening = ("Hey — I built a complete bakery startup course. 13 modules, "
-                                   "8 hours of video, covers everything from costings to labour. "
-                                   "Was £999, yours for £27. Want me to send it over?")
+                    # Unified opener — value-first, email-capture, no interrogation.
+                    # Whatever keyword triggered them, the first DM is the same warm
+                    # offer. The funnel type is still tracked on the conversation row
+                    # (used downstream by the prompt to lightly tailor tone), but the
+                    # entry point no longer interrogates — that wall was killing 100%
+                    # of leads at the qualifying stage (see Command Centre /instabot).
+                    if funnel_type == "startup_course":
+                        # Course-keyword commenters get the course offer directly —
+                        # they explicitly asked for it. Email still captured first.
+                        opening = (
+                            "Hey — thanks for reaching out. I built a complete bakery "
+                            "startup course (13 modules, 8 hours of video, was £999, "
+                            "yours for £27). What's the best email and I'll send the "
+                            "details across?"
+                        )
                     else:
-                        opening = ("Hey — thanks for reaching out. Quick question before anything "
-                                   "else — are you running a bakery or café at the moment?")
+                        # Everyone else (application + lead_magnet keywords) gets the
+                        # free calculator. Qualifies on engagement, not on a quiz.
+                        opening = (
+                            "Hey — thanks for reaching out. I've put together a free "
+                            "Bakery Margin Calculator that walks you through exactly "
+                            "where most bakeries leak 5–15% net profit and what to fix "
+                            "first.\n\nWhat's the best email and I'll send it across?"
+                        )
 
                     await send_dm(commenter_id, opening)
                     upsert_conversation(commenter_id, {
