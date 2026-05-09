@@ -1257,6 +1257,31 @@ async def admin_sales_set(request: Request, x_admin_key: str | None = Header(def
     return {"closed_won_total": value}
 
 
+@app.post("/admin/test-send-dm")
+async def admin_test_send_dm(request: Request, x_admin_key: str | None = Header(default=None)):
+    """Send a test DM to a specific IG recipient_id and return the FULL IG API
+    response. Used for debugging cases where the bot's `send_dm` returns 200
+    but the recipient never sees the message in their IG inbox (suspected
+    silent-drop on comment-scoped IDs that haven't yet established a real DM
+    thread). Pass `{"recipient_id": "...", "text": "..."}`. No conversation
+    state is touched. No human-delay applied."""
+    _check_admin(x_admin_key)
+    body = await request.json()
+    recipient_id = (body.get("recipient_id") or "").strip()
+    text         = body.get("text") or "Test message from /admin/test-send-dm"
+    if not recipient_id:
+        raise HTTPException(status_code=400, detail="recipient_id required")
+    result = await send_dm(recipient_id, text, delay=False)
+    return {
+        "recipient_id":    recipient_id,
+        "text_sent":       text,
+        "ok":              result.get("ok"),
+        "status":          result.get("status"),
+        "ig_response":     result.get("body"),
+        "window_expired":  result.get("window_expired"),
+    }
+
+
 @app.post("/admin/test-claude")
 async def admin_test_claude(request: Request, x_admin_key: str | None = Header(default=None)):
     """Smoke-test Claude's reply for a given funnel + message + history.
