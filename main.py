@@ -71,6 +71,29 @@ WHOP_WEBHOOK_SECRET  = os.environ.get("WHOP_WEBHOOK_SECRET", "")
 # Marker Claude appends when a lead matches the high-value criteria.
 # Stripped before the DM is sent — never seen by the lead.
 HIGH_VALUE_MARKER = "[HIGH_VALUE_LEAD]"
+
+# ─── Follow-up cadence config ────────────────────────────────────────────────
+# Aggressive: 3 follow-ups within the first hour, fires AFTER the bot has
+# delivered something concrete (calculator URL / programme outline / booking
+# link / course link). Catches hot leads while they're still in the inbox.
+# After hour 1, GHL email workflows take over via the `ff_lead_ig_dm` tag.
+# The moment the lead replies, `awaiting_user` flips to False and the cadence
+# stops dead.
+FOLLOW_UP_GAPS_AGGRESSIVE = (
+    timedelta(minutes=10),  # bot reply     → 1st follow-up (count=0 fires at T+10min)
+    timedelta(minutes=20),  # 1st           → 2nd (count=1, fires T+30min)
+    timedelta(minutes=30),  # 2nd           → 3rd (count=2, fires T+1h)
+)
+# Qualifying: bot is still mid-conversation, content not yet delivered. Slower
+# cadence so we don't nag during normal back-and-forth.
+FOLLOW_UP_GAPS_QUALIFYING = (
+    timedelta(hours=24),    # bot reply → 1st (T+24h)
+    timedelta(hours=48),    # 1st       → 2nd (T+72h)
+    timedelta(days=4),      # 2nd       → 3rd (T+7d)
+)
+# Stages that trigger the aggressive cadence. `stage` flips to one of these
+# the moment the bot drops the corresponding URL into a reply.
+CONTENT_DELIVERY_STAGES = ("calculator_sent", "outline_sent", "booking_sent", "course_sent")
 # ─────────────────────────────────────────────────────────────────────────────
 
 anthropic_client = Anthropic(api_key=ANTHROPIC_API_KEY) if ANTHROPIC_API_KEY else None
@@ -583,11 +606,32 @@ def append_history(sender_id: str, role: str, content: str) -> list[dict]:
     return history
 
 
+def mark_stage(sender_id: str, stage: str) -> None:
+    """Mark the conversation as having reached a new stage. For content-delivery
+    stages (calculator_sent / outline_sent / booking_sent / course_sent) this
+    also flips the row onto the aggressive 3-step follow-up cadence — first
+    nudge fires at NOW + 10min unless the lead replies first."""
+    fields: dict = {"stage": stage}
+
+    # outline_sent_at is referenced by the Command Centre /instabot dashboard
+    # ("Outlines sent (7d)") — keep populating it specifically.
+    if stage == "outline_sent":
+        fields["outline_sent_at"] = _now_iso()
+
+    if stage in CONTENT_DELIVERY_STAGES:
+        fields["follow_up_count"]  = 0
+        fields["awaiting_user"]    = True
+        fields["next_follow_up_at"] = (
+            datetime.now(timezone.utc) + FOLLOW_UP_GAPS_AGGRESSIVE[0]
+        ).isoformat()
+
+    upsert_conversation(sender_id, fields)
+
+
+# Backwards-compat — kept so the existing call site in get_claude_reply doesn't
+# need to change. New stage transitions go through mark_stage() directly.
 def mark_outline_sent(sender_id: str) -> None:
-    upsert_conversation(sender_id, {
-        "stage": "outline_sent",
-        "outline_sent_at": _now_iso(),
-    })
+    mark_stage(sender_id, "outline_sent")
 
 
 def is_comment_processed(comment_id: str) -> bool:
@@ -901,9 +945,23 @@ async def get_claude_reply(sender_id: str, user_message: str) -> str:
 
             append_history(sender_id, "assistant", reply)
 
-            # Detect outline-sent (so cron knows to fire the right follow-ups)
-            if PROGRAMME_OUTLINE_URL in reply and conv.get("stage") != "outline_sent":
-                mark_outline_sent(sender_id)
+            # Detect what the bot just delivered → flip to the aggressive
+            # 3-step cadence. Order matters when a reply contains multiple
+            # URLs: an outline reply that also lists the booking + Whop links
+            # in the same message is still primarily an outline delivery, so
+            # PROGRAMME_OUTLINE_URL takes precedence over BOOKING_URL.
+            new_stage: str | None = None
+            if LEAD_MAGNET_URL in reply:
+                new_stage = "calculator_sent"
+            elif PROGRAMME_OUTLINE_URL in reply:
+                new_stage = "outline_sent"
+            elif (BOOKING_URL in reply) or (WHOP_PROGRAMME_URL in reply):
+                new_stage = "booking_sent"
+            elif STARTUP_COURSE_URL in reply:
+                new_stage = "course_sent"
+
+            if new_stage and conv.get("stage") != new_stage:
+                mark_stage(sender_id, new_stage)
 
             return reply
         except Exception as e:
@@ -1035,44 +1093,68 @@ async def receive_message(request: Request):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Follow-up scheduler — runs hourly inside the same process
+# Follow-up scheduler — runs every 5 minutes (was hourly; tightened so the
+# 10-min content-delivered nudges actually fire near their target time
+# instead of waiting up to a full hour for the next sweep).
 # ─────────────────────────────────────────────────────────────────────────────
 def follow_up_message(conv: dict, count: int) -> str | None:
-    """Pick the right re-engagement message for this conversation + step."""
+    """Pick the right re-engagement message based on stage + count + funnel.
+    Returns None when there are no more follow-ups for this state — caller
+    archives the row in that case."""
+    stage  = conv.get("stage", "qualifying")
     funnel = conv.get("funnel", "application")
 
-    # Lead-magnet / startup-course funnels get one gentle nudge then stop.
-    if funnel != "application":
-        if count == 0:
-            if funnel == "lead_magnet":
-                return ("Hey — did you get a chance to run your numbers through the calculator? "
-                        "Happy to talk you through anything that's not clear.")
-            if funnel == "startup_course":
-                return ("Hey — any thoughts on the startup course? Happy to answer anything.")
-        return None  # only one nudge for these funnels
-
-    # Application funnel — full sequence
-    if count == 0:
-        return ("Hey — quick check, did you get a chance to read through the programme outline? "
-                "Happy to answer anything that's not clear.")
-    if count == 1:
-        # Case study + soft pull
+    # ── Aggressive 3-step (content delivered) ─────────────────────────────
+    if stage == "calculator_sent":
+        messages = [
+            "How'd the numbers look? Most owners are surprised by where the leak shows up.",
+            "If you've plugged things in, what jumped out?",
+            (f"Last shout from me on this — calc's still here if you missed it: "
+             f"{LEAD_MAGNET_URL}. Once you've run it, happy to walk you through anything."),
+        ]
+    elif stage == "outline_sent":
         cs = random.choice(CASE_STUDIES) if CASE_STUDIES else (
-            "had a client recently go from sub-£20K/month to £35K with 12% net profit — "
-            "exactly what we'd build for you"
+            "had a client recently go from sub-£20K/month to £35K with 12% net profit"
         )
-        return (
-            f"Wanted to share something — {cs} If it's relevant, the breakdown's still here: "
-            f"{PROGRAMME_OUTLINE_URL}. No pressure either way."
+        messages = [
+            "Quick check — got the outline open? Any first reactions?",
+            f"Wanted to share — {cs}. Outline's still here: {PROGRAMME_OUTLINE_URL}",
+            (f"Two ways from here when you're ready — quick call ({BOOKING_URL}) or "
+             f"lock your spot directly ({WHOP_PROGRAMME_URL}). What suits?"),
+        ]
+    elif stage == "booking_sent":
+        messages = [
+            "Did you manage to grab a slot?",
+            "If the calendar's playing up, just shout and I'll sort a time manually.",
+            (f"Last reminder on the booking: {BOOKING_URL} — or grab your spot directly: "
+             f"{WHOP_PROGRAMME_URL}"),
+        ]
+    elif stage == "course_sent":
+        messages = [
+            "Got the course link open? Easy as that.",
+            "Module 1 (recipe costings) is where most people start — that's where the quick wins are.",
+            f"Last shout — link's still here: {STARTUP_COURSE_URL}. Anytime.",
+        ]
+
+    # ── Qualifying (slower 24h cadence — bot still mid-conversation) ──────
+    elif funnel == "lead_magnet":
+        messages = ["Hey — still there? Just checking in. Happy to send the calc whenever."]
+    elif funnel == "startup_course":
+        messages = ["Hey — still there? Happy to send the course link whenever."]
+    else:  # application funnel, qualifying state
+        cs = random.choice(CASE_STUDIES) if CASE_STUDIES else (
+            "had a client recently go from sub-£20K/month to £35K with 12% net profit"
         )
-    if count == 2:
         cap = capacity_line()
-        return (
-            f"Last one from me — {cap.lower()} "
-            f"If it's the right time, here's the link to lock it in: {WHOP_PROGRAMME_URL} — "
-            f"or book a quick call: {BOOKING_URL}. If it's not, no stress, just shout if anything changes."
-        )
-    return None
+        messages = [
+            "Hey — still on the fence or anything I can clarify?",
+            f"Wanted to share something — {cs}. No pressure either way.",
+            f"Last one from me — {cap.lower()} If now's not the right time, no stress.",
+        ]
+
+    if count >= len(messages):
+        return None
+    return messages[count]
 
 
 async def run_follow_ups() -> dict:
@@ -1099,22 +1181,14 @@ async def run_follow_ups() -> dict:
     for conv in due:
         sender_id = conv["ig_sender_id"]
         count     = conv.get("follow_up_count", 0)
-
-        # Archive after 3 follow-ups
-        if count >= 3:
-            upsert_conversation(sender_id, {
-                "archived": True,
-                "stage": conv.get("stage", "archived") or "archived",
-                "next_follow_up_at": None,
-            })
-            archived += 1
-            continue
+        stage     = conv.get("stage", "qualifying")
 
         msg = follow_up_message(conv, count)
         if not msg:
-            # No more follow-ups for this funnel
+            # No more follow-ups configured for this stage/funnel — archive.
             upsert_conversation(sender_id, {
                 "archived": True,
+                "stage": stage or "archived",
                 "next_follow_up_at": None,
             })
             archived += 1
@@ -1143,24 +1217,39 @@ async def run_follow_ups() -> dict:
 
         sent += 1
 
-        # Append to history + schedule next
         history = (conv.get("message_history") or []) + [
             {"role": "assistant", "content": msg}
         ]
-        # Cadence (absolute from when the bot last replied / outline_sent):
-        #   T+24h: 1st follow-up   (count 0→1, schedule next +48h → fires T+72h)
-        #   T+72h: case study      (count 1→2, schedule next +4d  → fires T+7d)
-        #   T+7d : soft close      (count 2→3, schedule next +7d  → archive at T+14d)
-        next_offsets = {0: timedelta(hours=48), 1: timedelta(days=4), 2: timedelta(days=7)}
-        next_at = datetime.now(timezone.utc) + next_offsets.get(count, timedelta(days=7))
 
-        upsert_conversation(sender_id, {
-            "message_history": history[-30:],
-            "last_assistant_message_at": _now_iso(),
-            "follow_up_count": count + 1,
-            "next_follow_up_at": next_at.isoformat(),
-            "awaiting_user": True,
-        })
+        # Pick the cadence by stage. Aggressive (10/30/60min) for content-
+        # delivered stages, slower (24h/72h/7d) for qualifying. After sending
+        # count=N, the next follow-up uses gaps[N+1]. If we've run out of
+        # gaps, this was the final nudge — archive immediately rather than
+        # leave the row hanging.
+        gaps = (
+            FOLLOW_UP_GAPS_AGGRESSIVE if stage in CONTENT_DELIVERY_STAGES
+            else FOLLOW_UP_GAPS_QUALIFYING
+        )
+        next_idx = count + 1
+        if next_idx < len(gaps):
+            upsert_conversation(sender_id, {
+                "message_history": history[-30:],
+                "last_assistant_message_at": _now_iso(),
+                "follow_up_count": count + 1,
+                "next_follow_up_at": (
+                    datetime.now(timezone.utc) + gaps[next_idx]
+                ).isoformat(),
+                "awaiting_user": True,
+            })
+        else:
+            upsert_conversation(sender_id, {
+                "message_history": history[-30:],
+                "last_assistant_message_at": _now_iso(),
+                "follow_up_count": count + 1,
+                "archived": True,
+                "next_follow_up_at": None,
+            })
+            archived += 1
 
     return {"sent": sent, "archived": archived, "due": len(due)}
 
@@ -1419,10 +1508,10 @@ async def _startup():
     if not supabase:
         logger.warning("Scheduler not started — Supabase missing")
         return
-    scheduler.add_job(run_follow_ups, "interval", hours=1, id="follow_ups",
-                      next_run_time=datetime.now(timezone.utc) + timedelta(minutes=5))
+    scheduler.add_job(run_follow_ups, "interval", minutes=5, id="follow_ups",
+                      next_run_time=datetime.now(timezone.utc) + timedelta(minutes=2))
     scheduler.start()
-    logger.info("Follow-up scheduler started (hourly)")
+    logger.info("Follow-up scheduler started (every 5min)")
 
 
 @app.on_event("shutdown")
