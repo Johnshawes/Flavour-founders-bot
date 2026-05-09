@@ -502,27 +502,39 @@ def get_conversation(sender_id: str) -> dict | None:
 def upsert_conversation(sender_id: str, fields: dict) -> None:
     """Insert or update a conversation row.
 
-    NOTE: PostgREST's `upsert` defaults to `default_to_null=True`, which means
-    any column NOT included in the payload is set to NULL on the UPDATE path.
-    That nuked NOT NULL columns like `funnel` whenever a partial-field caller
-    (e.g. `maybe_capture_email` sending only `{email, email_captured_at}`)
-    fired against an existing row. Passing `default_to_null=False` makes the
-    UPDATE preserve existing values for absent columns — which is what every
-    caller in this file actually wants.
+    We deliberately do NOT use PostgREST's upsert here. Two earlier attempts
+    (vanilla upsert; upsert with `default_to_null=False`) both blew up on the
+    NOT NULL `funnel` column whenever a caller passed a partial payload like
+    `{email, email_captured_at}` — PostgREST kept routing those through the
+    INSERT branch (with NULL for missing columns) instead of taking the
+    ON CONFLICT UPDATE branch we expected.
+
+    Explicit SELECT → UPDATE / INSERT is one extra round-trip but bulletproof:
+    UPDATE only touches the columns we sent (existing values preserved), and
+    INSERT only fires when the row genuinely doesn't exist (and only callers
+    that supply the full row — like `append_history` — hit that path).
     """
-    payload = {"ig_sender_id": sender_id, **fields, "updated_at": _now_iso()}
+    payload = {**fields, "updated_at": _now_iso()}
     if supabase:
         try:
-            supabase.table("instagram_conversations").upsert(
-                payload, default_to_null=False
-            ).execute()
+            existing = supabase.table("instagram_conversations").select(
+                "ig_sender_id"
+            ).eq("ig_sender_id", sender_id).limit(1).execute()
+            if existing.data:
+                supabase.table("instagram_conversations").update(payload).eq(
+                    "ig_sender_id", sender_id
+                ).execute()
+            else:
+                supabase.table("instagram_conversations").insert(
+                    {"ig_sender_id": sender_id, **payload}
+                ).execute()
             return
         except Exception as e:
             logger.error(f"Supabase upsert_conversation failed: {e}")
-    # Fallback
-    existing = _mem_conversations.get(sender_id, {"ig_sender_id": sender_id})
-    existing.update(payload)
-    _mem_conversations[sender_id] = existing
+    # Fallback (in-memory dev mode)
+    existing_mem = _mem_conversations.get(sender_id, {"ig_sender_id": sender_id})
+    existing_mem.update({"ig_sender_id": sender_id, **payload})
+    _mem_conversations[sender_id] = existing_mem
 
 
 def append_history(sender_id: str, role: str, content: str) -> list[dict]:
