@@ -1391,8 +1391,15 @@ async def _shutdown():
 @app.get("/")
 async def health():
     state = get_capacity_state() if supabase else None
+    # Surface integration wiring at runtime so we don't have to grep Railway
+    # logs to find out a redeploy didn't pick up an env var. All booleans —
+    # never leak the actual key values from this endpoint.
     return {
         "status": "Flavour Founders Bot is running 🚀",
-        "supabase": bool(supabase),
-        "capacity": state,
+        "supabase":   bool(supabase),
+        "anthropic":  bool(ANTHROPIC_API_KEY),
+        "instagram":  bool(ACCESS_TOKEN and PAGE_ID),
+        "ghl":        bool(GHL_API_KEY and GHL_LOCATION_ID),
+        "whop":       bool(WHOP_WEBHOOK_SECRET),
+        "capacity":   state,
     }
