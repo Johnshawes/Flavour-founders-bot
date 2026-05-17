@@ -180,15 +180,24 @@ CASE_STUDIES_RAW = _read_optional(
 )
 
 
+_CASE_STUDY_SEPARATOR = re.compile(r"(?m)^\s*---\s*$")
+
+
 def parse_case_studies(raw: str) -> list[str]:
     if not raw:
         return []
-    chunks = [c.strip() for c in raw.split("---")]
-    # drop comments and blanks
-    return [
-        c for c in chunks
-        if c and not all(line.startswith("#") for line in c.splitlines() if line.strip())
-    ]
+    out: list[str] = []
+    # Split only on `---` lines, not inline `---` inside comments. Then strip
+    # `#` comment lines out of every chunk — otherwise the file header
+    # rides along with the first case study and gets parroted into DMs.
+    for chunk in _CASE_STUDY_SEPARATOR.split(raw):
+        body = "\n".join(
+            line for line in chunk.splitlines()
+            if not line.lstrip().startswith("#")
+        ).strip()
+        if body:
+            out.append(body)
+    return out
 
 
 CASE_STUDIES = parse_case_studies(CASE_STUDIES_RAW)
