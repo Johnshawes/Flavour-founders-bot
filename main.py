@@ -1195,7 +1195,7 @@ async def get_claude_reply(sender_id: str, user_message: str) -> str:
     for attempt in range(3):
         try:
             response = anthropic_client.messages.create(
-                model="claude-sonnet-4-20250514",
+                model="claude-sonnet-4-6",
                 max_tokens=400,
                 system=system,
                 messages=trimmed,
@@ -1660,7 +1660,7 @@ async def admin_test_claude(request: Request, x_admin_key: str | None = Header(d
     messages = list(history) + [{"role": "user", "content": message}]
 
     response = anthropic_client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model="claude-sonnet-4-6",
         max_tokens=400,
         system=system,
         messages=messages,
