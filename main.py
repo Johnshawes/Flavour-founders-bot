@@ -1770,6 +1770,121 @@ async def whop_webhook(request: Request):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Instagram token auto-refresh
+#
+# Long-lived IG tokens (the IGAA… kind, "Instagram API with Instagram Login")
+# expire after ~60 days. Nothing used to roll them, so the token silently died
+# on 23-May-26 and every DM bounced with OAuthException 190 for two weeks while
+# the server still reported healthy. This section keeps the token alive forever:
+#
+#   • The live token + its expiry live in Supabase `bot_config`, so a redeploy
+#     can't snap the process back to a stale env value.
+#   • INSTAGRAM_ACCESS_TOKEN (env) is the BOOTSTRAP. Auto-refresh never writes to
+#     env — so if the env value ever differs from what we last adopted, that's a
+#     human pasting a fresh token to recover, and we adopt it immediately.
+#   • A daily job calls IG's ig_refresh_token endpoint to extend the token
+#     another 60 days. (IG requires the token be >24h old and not yet expired —
+#     so the first refresh after a manual paste no-ops for a day, which is fine.)
+#
+# No new env vars or app secret needed — refresh only needs the token itself.
+# ─────────────────────────────────────────────────────────────────────────────
+def _get_config(key: str) -> str | None:
+    if not supabase:
+        return None
+    try:
+        res = supabase.table("bot_config").select("value").eq("key", key).execute()
+        return res.data[0]["value"] if res.data else None
+    except Exception as e:
+        logger.error(f"bot_config read failed for {key}: {e}")
+        return None
+
+
+def _set_config(key: str, value: str) -> None:
+    if not supabase:
+        return
+    try:
+        supabase.table("bot_config").upsert({
+            "key": key, "value": value, "updated_at": _now_iso(),
+        }).execute()
+    except Exception as e:
+        logger.error(f"bot_config write failed for {key}: {e}")
+
+
+def token_days_left() -> float | None:
+    """Days until the live token expires, from the persisted expiry. None if unknown."""
+    raw = _get_config("instagram_token_expires_at")
+    if not raw:
+        return None
+    try:
+        expires = datetime.fromisoformat(raw)
+        return round((expires - datetime.now(timezone.utc)).total_seconds() / 86400, 1)
+    except Exception:
+        return None
+
+
+def adopt_instagram_token() -> None:
+    """Decide which token the process should run with, at startup.
+
+    Rule: if the env token differs from the seed we last adopted, a human just
+    pasted a fresh token → adopt env and reseed. Otherwise use the Supabase-
+    stored (auto-refreshed) token. Falls back to env when nothing's stored yet.
+    """
+    global ACCESS_TOKEN
+    env_token   = os.environ.get("INSTAGRAM_ACCESS_TOKEN", "")
+    seed        = _get_config("instagram_token_env_seed")
+    stored      = _get_config("instagram_access_token")
+
+    if env_token and env_token != seed:
+        # Human intervention — adopt the freshly pasted env token.
+        ACCESS_TOKEN = env_token
+        _set_config("instagram_access_token", env_token)
+        _set_config("instagram_token_env_seed", env_token)
+        # Provisional 60-day expiry; the first successful refresh corrects it.
+        _set_config(
+            "instagram_token_expires_at",
+            (datetime.now(timezone.utc) + timedelta(days=60)).isoformat(),
+        )
+        logger.info("IG token: adopted freshly pasted env token (reseeded, ~60d provisional)")
+    elif stored:
+        ACCESS_TOKEN = stored
+        logger.info(f"IG token: using stored token ({token_days_left()}d left)")
+    else:
+        ACCESS_TOKEN = env_token
+        logger.info("IG token: no stored token yet — using env bootstrap")
+
+
+async def refresh_instagram_token() -> None:
+    """Roll the long-lived token forward ~60 days and persist it.
+    No-ops harmlessly if IG rejects (e.g. token <24h old or already dead)."""
+    global ACCESS_TOKEN
+    if not ACCESS_TOKEN:
+        logger.warning("IG token refresh skipped — no token loaded")
+        return
+    url = "https://graph.instagram.com/refresh_access_token"
+    params = {"grant_type": "ig_refresh_token", "access_token": ACCESS_TOKEN}
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(url, params=params)
+        if r.status_code != 200:
+            logger.warning(f"IG token refresh declined: {r.status_code} {r.text[:200]}")
+            return
+        data        = r.json()
+        new_token   = data.get("access_token")
+        expires_in  = int(data.get("expires_in", 5184000))  # default ~60d
+        if not new_token:
+            logger.warning(f"IG token refresh returned no token: {str(data)[:200]}")
+            return
+        ACCESS_TOKEN = new_token
+        expires_at = (datetime.now(timezone.utc) + timedelta(seconds=expires_in)).isoformat()
+        _set_config("instagram_access_token", new_token)
+        _set_config("instagram_token_env_seed", os.environ.get("INSTAGRAM_ACCESS_TOKEN", ""))
+        _set_config("instagram_token_expires_at", expires_at)
+        logger.info(f"IG token refreshed — valid ~{round(expires_in/86400)}d (until {expires_at[:10]})")
+    except Exception as e:
+        logger.error(f"IG token refresh failed: {e}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Scheduler boot — runs the follow-up sweep every hour
 # ─────────────────────────────────────────────────────────────────────────────
 scheduler = AsyncIOScheduler(timezone="UTC")
@@ -1780,10 +1895,17 @@ async def _startup():
     if not supabase:
         logger.warning("Scheduler not started — Supabase missing")
         return
+    # Decide which token to run with (stored vs freshly-pasted env), then try a
+    # refresh straight away so a long-dead token gets rolled the moment we boot
+    # with a valid one. Both are best-effort and never block startup.
+    adopt_instagram_token()
+    await refresh_instagram_token()
     scheduler.add_job(run_follow_ups, "interval", minutes=5, id="follow_ups",
                       next_run_time=datetime.now(timezone.utc) + timedelta(minutes=2))
+    scheduler.add_job(refresh_instagram_token, "interval", hours=24, id="token_refresh",
+                      next_run_time=datetime.now(timezone.utc) + timedelta(hours=24))
     scheduler.start()
-    logger.info("Follow-up scheduler started (every 5min)")
+    logger.info("Schedulers started (follow-ups 5min, token refresh 24h)")
 
 
 @app.on_event("shutdown")
@@ -1803,11 +1925,17 @@ async def health():
     # the LENGTH of each secret (never the value) — Railway's UI masks vars
     # the same way whether they're 0 chars or 100, so a length probe is the
     # only way to tell from outside whether a var is genuinely set.
+    # Token health: a present-but-expired token used to report "instagram: true"
+    # while every DM bounced. days_left comes from the persisted expiry, and
+    # token_valid is only True when we have a token AND it isn't past expiry.
+    days_left = token_days_left()
+    token_valid = bool(ACCESS_TOKEN and PAGE_ID and (days_left is None or days_left > 0))
     return {
         "status": "Flavour Founders Bot is running 🚀",
         "supabase":   bool(supabase),
         "anthropic":  bool(ANTHROPIC_API_KEY),
-        "instagram":  bool(ACCESS_TOKEN and PAGE_ID),
+        "instagram":  token_valid,
+        "instagram_token_days_left": days_left,
         "ghl":        bool(GHL_API_KEY and GHL_LOCATION_ID),
         "whop":       bool(WHOP_WEBHOOK_SECRET),
         "lens": {
