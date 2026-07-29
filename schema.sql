@@ -35,5 +35,6 @@ CREATE TABLE IF NOT EXISTS bot_config (
 
 INSERT INTO bot_config (key, value) VALUES
   ('monthly_capacity', '10'),
-  ('current_clients_this_month', '6')
+  ('current_clients_this_month', '6'),
+  ('follow_ups_enabled', '1')
 ON CONFLICT (key) DO NOTHING;

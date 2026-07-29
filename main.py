@@ -13,6 +13,9 @@ Follow-up sequence (qualified leads who go quiet after we replied):
   T+72h  → case study + soft pull
   T+7d   → capacity close
   T+14d  → archive (drop into GHL nurture)
+
+Calculator delivery (lead magnet) is the exception: give the tool, then ONE
+follow-up at T+4h, then archive. No chasing.
 """
 
 import os
@@ -74,8 +77,9 @@ HIGH_VALUE_MARKER = "[HIGH_VALUE_LEAD]"
 
 # ─── Follow-up cadence config ────────────────────────────────────────────────
 # Aggressive: 3 follow-ups within the first hour, fires AFTER the bot has
-# delivered something concrete (calculator URL / programme outline / booking
-# link / course link). Catches hot leads while they're still in the inbox.
+# delivered something concrete (programme outline / booking link / course
+# link). Catches hot leads while they're still in the inbox. NOT used for the
+# calculator — that stage has its own single-nudge cadence below.
 # After hour 1, GHL email workflows take over via the `ff_lead_ig_dm` tag.
 # The moment the lead replies, `awaiting_user` flips to False and the cadence
 # stops dead.
@@ -83,6 +87,12 @@ FOLLOW_UP_GAPS_AGGRESSIVE = (
     timedelta(minutes=10),  # bot reply     → 1st follow-up (count=0 fires at T+10min)
     timedelta(minutes=20),  # 1st           → 2nd (count=1, fires T+30min)
     timedelta(minutes=30),  # 2nd           → 3rd (count=2, fires T+1h)
+)
+# Calculator (lead magnet): give the tool, then ONE follow-up — no chasing.
+# Fires a few hours after delivery (time to actually run it, still inside
+# Meta's 24h DM window), then the row archives. GHL email nurture takes over.
+FOLLOW_UP_GAPS_CALCULATOR = (
+    timedelta(hours=4),     # calculator sent → single follow-up (T+4h), then done
 )
 # Qualifying: bot is still mid-conversation, content not yet delivered. Slower
 # cadence so we don't nag during normal back-and-forth.
@@ -94,6 +104,17 @@ FOLLOW_UP_GAPS_QUALIFYING = (
 # Stages that trigger the aggressive cadence. `stage` flips to one of these
 # the moment the bot drops the corresponding URL into a reply.
 CONTENT_DELIVERY_STAGES = ("calculator_sent", "outline_sent", "booking_sent", "course_sent")
+
+
+def gaps_for_stage(stage: str) -> tuple:
+    """Cadence for a conversation stage. Calculator delivery gets the single
+    no-chase follow-up; other content stages keep the aggressive 3-step;
+    everything else (still qualifying) runs the slow cadence."""
+    if stage == "calculator_sent":
+        return FOLLOW_UP_GAPS_CALCULATOR
+    if stage in CONTENT_DELIVERY_STAGES:
+        return FOLLOW_UP_GAPS_AGGRESSIVE
+    return FOLLOW_UP_GAPS_QUALIFYING
 # ─────────────────────────────────────────────────────────────────────────────
 
 anthropic_client = Anthropic(api_key=ANTHROPIC_API_KEY) if ANTHROPIC_API_KEY else None
@@ -224,6 +245,23 @@ def get_capacity_state() -> dict:
     spots_left = max(0, capacity - current)
     pct_full   = (current / capacity) if capacity else 0.0
     return {"capacity": capacity, "current": current, "spots_left": spots_left, "pct_full": pct_full}
+
+
+def follow_ups_enabled() -> bool:
+    """Global kill switch for the follow-up scheduler, read from bot_config.
+    Set `follow_ups_enabled` to '0' (via /admin/follow-ups/pause or SQL) to stop
+    every outgoing follow-up instantly without a redeploy. Defaults to ON."""
+    if not supabase:
+        return True
+    try:
+        rows = supabase.table("bot_config").select("value").eq(
+            "key", "follow_ups_enabled"
+        ).limit(1).execute().data or []
+        if rows:
+            return str(rows[0]["value"]).strip().lower() not in ("0", "false", "off", "")
+    except Exception as e:
+        logger.error(f"follow_ups_enabled read failed: {e}")
+    return True
 
 
 def capacity_line() -> str:
@@ -880,9 +918,9 @@ def append_history(sender_id: str, role: str, content: str) -> list[dict]:
 
 def mark_stage(sender_id: str, stage: str) -> None:
     """Mark the conversation as having reached a new stage. For content-delivery
-    stages (calculator_sent / outline_sent / booking_sent / course_sent) this
-    also flips the row onto the aggressive 3-step follow-up cadence — first
-    nudge fires at NOW + 10min unless the lead replies first."""
+    stages this also schedules the follow-up cadence: calculator_sent gets ONE
+    nudge at T+4h then archives; outline/booking/course get the aggressive
+    3-step (first nudge NOW + 10min). A lead reply cancels either."""
     fields: dict = {"stage": stage}
 
     # outline_sent_at is referenced by the Command Centre /instabot dashboard
@@ -894,7 +932,7 @@ def mark_stage(sender_id: str, stage: str) -> None:
         fields["follow_up_count"]  = 0
         fields["awaiting_user"]    = True
         fields["next_follow_up_at"] = (
-            datetime.now(timezone.utc) + FOLLOW_UP_GAPS_AGGRESSIVE[0]
+            datetime.now(timezone.utc) + gaps_for_stage(stage)[0]
         ).isoformat()
 
     upsert_conversation(sender_id, fields)
@@ -1376,13 +1414,12 @@ def follow_up_message(conv: dict, count: int) -> str | None:
     stage  = conv.get("stage", "qualifying")
     funnel = conv.get("funnel", "application")
 
-    # ── Aggressive 3-step (content delivered) ─────────────────────────────
+    # ── Calculator delivered — ONE follow-up, then done (no chasing) ──────
     if stage == "calculator_sent":
         messages = [
-            "How'd the numbers look? Most owners are surprised by where the leak shows up.",
-            "If you've plugged things in, what jumped out?",
-            (f"Last shout from me on this — calc's still here if you missed it: "
-             f"{LEAD_MAGNET_URL}. Once you've run it, happy to walk you through anything."),
+            (f"How'd the numbers look? If you haven't had a chance yet, calc's here: "
+             f"{LEAD_MAGNET_URL} — takes 2 minutes, and happy to walk you through "
+             f"whatever it shows."),
         ]
     elif stage == "outline_sent":
         cs = random.choice(CASE_STUDIES) if CASE_STUDIES else (
@@ -1435,6 +1472,10 @@ async def run_follow_ups() -> dict:
         logger.info("Skipping follow-ups — Supabase not configured")
         return {"sent": 0, "archived": 0, "skipped": "no supabase"}
 
+    if not follow_ups_enabled():
+        logger.info("Follow-ups paused via bot_config (follow_ups_enabled=0)")
+        return {"sent": 0, "archived": 0, "skipped": "paused"}
+
     now_iso = _now_iso()
     sent = 0
     archived = 0
@@ -1466,6 +1507,28 @@ async def run_follow_ups() -> dict:
             archived += 1
             continue
 
+        # ── RESERVE BEFORE SENDING ───────────────────────────────────────────
+        # Advance the schedule + count FIRST, so a lost/failed write can never
+        # leave this row "due" forever. The old order (send → then write) meant
+        # any swallowed Supabase error or mid-loop restart re-sent the same
+        # opener every 5 minutes indefinitely. We claim the slot, then send.
+        # Aggressive (10/30/60min) for content-delivered stages, slower
+        # (24h/72h/7d) for qualifying. After count=N, the next nudge uses
+        # gaps[N+1]; if we're out of gaps this was the final one → archive.
+        gaps = gaps_for_stage(stage)
+        next_idx = count + 1
+        is_final = next_idx >= len(gaps)
+        reservation: dict = {"follow_up_count": next_idx}
+        if is_final:
+            reservation["next_follow_up_at"] = None
+            reservation["archived"] = True
+        else:
+            reservation["next_follow_up_at"] = (
+                datetime.now(timezone.utc) + gaps[next_idx]
+            ).isoformat()
+            reservation["awaiting_user"] = True
+        upsert_conversation(sender_id, reservation)
+
         result = await send_dm(sender_id, msg, delay=False)
 
         # IG 24h messaging window has closed for this lead — Meta will keep
@@ -1480,48 +1543,28 @@ async def run_follow_ups() -> dict:
             archived += 1
             continue
 
-        # Other (transient) failure — leave the row alone so the next sweep retries.
+        # Transient failure: the slot is ALREADY advanced, so we deliberately do
+        # NOT retry — the lead simply misses this one nudge. Never re-spam.
         if not result.get("ok"):
             logger.error(
-                f"Follow-up send failed (transient) for {sender_id}, will retry next sweep"
+                f"Follow-up send failed for {sender_id} (count={count}); "
+                f"slot already advanced, not retried"
             )
             continue
 
         sent += 1
+        if is_final:
+            archived += 1
 
+        # Record the message we actually sent (only on success, so history stays
+        # truthful even when a send is dropped above).
         history = (conv.get("message_history") or []) + [
             {"role": "assistant", "content": msg}
         ]
-
-        # Pick the cadence by stage. Aggressive (10/30/60min) for content-
-        # delivered stages, slower (24h/72h/7d) for qualifying. After sending
-        # count=N, the next follow-up uses gaps[N+1]. If we've run out of
-        # gaps, this was the final nudge — archive immediately rather than
-        # leave the row hanging.
-        gaps = (
-            FOLLOW_UP_GAPS_AGGRESSIVE if stage in CONTENT_DELIVERY_STAGES
-            else FOLLOW_UP_GAPS_QUALIFYING
-        )
-        next_idx = count + 1
-        if next_idx < len(gaps):
-            upsert_conversation(sender_id, {
-                "message_history": history[-30:],
-                "last_assistant_message_at": _now_iso(),
-                "follow_up_count": count + 1,
-                "next_follow_up_at": (
-                    datetime.now(timezone.utc) + gaps[next_idx]
-                ).isoformat(),
-                "awaiting_user": True,
-            })
-        else:
-            upsert_conversation(sender_id, {
-                "message_history": history[-30:],
-                "last_assistant_message_at": _now_iso(),
-                "follow_up_count": count + 1,
-                "archived": True,
-                "next_follow_up_at": None,
-            })
-            archived += 1
+        upsert_conversation(sender_id, {
+            "message_history": history[-30:],
+            "last_assistant_message_at": _now_iso(),
+        })
 
     return {"sent": sent, "archived": archived, "due": len(due)}
 
@@ -1589,6 +1632,43 @@ async def admin_run_follow_ups(x_admin_key: str | None = Header(default=None)):
     """Manually trigger a follow-up sweep (useful for testing)."""
     _check_admin(x_admin_key)
     return await run_follow_ups()
+
+
+def _set_follow_ups_flag(value: str) -> None:
+    supabase.table("bot_config").upsert({
+        "key": "follow_ups_enabled", "value": value, "updated_at": _now_iso(),
+    }).execute()
+
+
+@app.post("/admin/follow-ups/pause")
+async def admin_follow_ups_pause(x_admin_key: str | None = Header(default=None)):
+    """EMERGENCY STOP — halt all outgoing follow-ups instantly (no redeploy).
+    Optionally also clears every pending slot so nothing is queued when resumed."""
+    _check_admin(x_admin_key)
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase not configured")
+    _set_follow_ups_flag("0")
+    cleared = 0
+    try:
+        res = supabase.table("instagram_conversations").update(
+            {"next_follow_up_at": None}
+        ).eq("archived", False).not_.is_("next_follow_up_at", "null").execute()
+        cleared = len(res.data or [])
+    except Exception as e:
+        logger.error(f"Failed clearing pending follow-ups on pause: {e}")
+    logger.warning(f"⛔ Follow-ups PAUSED via admin. Cleared {cleared} pending slots.")
+    return {"follow_ups_enabled": False, "pending_cleared": cleared}
+
+
+@app.post("/admin/follow-ups/resume")
+async def admin_follow_ups_resume(x_admin_key: str | None = Header(default=None)):
+    """Re-enable the follow-up scheduler after a pause."""
+    _check_admin(x_admin_key)
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase not configured")
+    _set_follow_ups_flag("1")
+    logger.info("Follow-ups RESUMED via admin.")
+    return {"follow_ups_enabled": True}
 
 
 @app.post("/admin/sales/increment")
