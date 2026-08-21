@@ -88,19 +88,13 @@ FOLLOW_UP_GAPS_AGGRESSIVE = (
     timedelta(minutes=20),  # 1st           → 2nd (count=1, fires T+30min)
     timedelta(minutes=30),  # 2nd           → 3rd (count=2, fires T+1h)
 )
-# Calculator (lead magnet): give the tool, then ONE follow-up — no chasing.
-# Fires a few hours after delivery (time to actually run it, still inside
-# Meta's 24h DM window), then the row archives. GHL email nurture takes over.
-FOLLOW_UP_GAPS_CALCULATOR = (
-    timedelta(hours=4),     # calculator sent → single follow-up (T+4h), then done
-)
-# Qualifying: bot is still mid-conversation, content not yet delivered. Slower
-# cadence so we don't nag during normal back-and-forth.
-FOLLOW_UP_GAPS_QUALIFYING = (
-    timedelta(hours=24),    # bot reply → 1st (T+24h)
-    timedelta(hours=48),    # 1st       → 2nd (T+72h)
-    timedelta(days=4),      # 2nd       → 3rd (T+7d)
-)
+# Calculator (lead magnet): give the tool, then STOP. No DM chasing — GHL
+# email nurture owns everything after delivery. (2026-08-21: was one T+4h
+# nudge, but reply-resets kept re-firing it daily. Killed entirely.)
+FOLLOW_UP_GAPS_CALCULATOR = ()
+# Qualifying (incl. no-email-yet leads): NO chasing. If they don't hand over
+# an email, we leave them alone — the ask stays in the thread, that's enough.
+FOLLOW_UP_GAPS_QUALIFYING = ()
 # Stages that trigger the aggressive cadence. `stage` flips to one of these
 # the moment the bot drops the corresponding URL into a reply.
 CONTENT_DELIVERY_STAGES = ("calculator_sent", "outline_sent", "booking_sent", "course_sent")
@@ -905,10 +899,9 @@ def append_history(sender_id: str, role: str, content: str) -> list[dict]:
     else:
         fields["last_assistant_message_at"] = _now_iso()
         fields["awaiting_user"] = True
-        # Schedule first follow-up 24h out — overridden below if outline_sent etc.
-        fields["next_follow_up_at"] = (
-            datetime.now(timezone.utc) + timedelta(hours=24)
-        ).isoformat()
+        # No auto-scheduled chase after a normal bot reply. Only mark_stage()
+        # (outline/booking/course delivery) schedules DM follow-ups now.
+        fields["next_follow_up_at"] = None
         # follow_up_count stays at whatever it was (so re-replies during a follow-up
         # sequence don't reset). The user-replied path resets it.
 
@@ -928,11 +921,12 @@ def mark_stage(sender_id: str, stage: str) -> None:
     if stage == "outline_sent":
         fields["outline_sent_at"] = _now_iso()
 
-    if stage in CONTENT_DELIVERY_STAGES:
+    gaps = gaps_for_stage(stage)
+    if stage in CONTENT_DELIVERY_STAGES and gaps:
         fields["follow_up_count"]  = 0
         fields["awaiting_user"]    = True
         fields["next_follow_up_at"] = (
-            datetime.now(timezone.utc) + gaps_for_stage(stage)[0]
+            datetime.now(timezone.utc) + gaps[0]
         ).isoformat()
 
     upsert_conversation(sender_id, fields)
@@ -1359,9 +1353,7 @@ async def receive_message(request: Request):
                         "message_history": [{"role": "assistant", "content": opening}],
                         "last_assistant_message_at": _now_iso(),
                         "awaiting_user": True,
-                        "next_follow_up_at": (
-                            datetime.now(timezone.utc) + timedelta(hours=24)
-                        ).isoformat(),
+                        "next_follow_up_at": None,
                     })
 
                 # ── DMs (v25 format) ─────────────────────────────────────
@@ -1412,15 +1404,11 @@ def follow_up_message(conv: dict, count: int) -> str | None:
     Returns None when there are no more follow-ups for this state — caller
     archives the row in that case."""
     stage  = conv.get("stage", "qualifying")
-    funnel = conv.get("funnel", "application")
 
-    # ── Calculator delivered — ONE follow-up, then done (no chasing) ──────
+    # ── Calculator delivered — NO follow-ups. GHL email nurture takes over.
+    # Returning None makes the sweep archive any already-queued rows silently.
     if stage == "calculator_sent":
-        messages = [
-            (f"How'd the numbers look? If you haven't had a chance yet, calc's here: "
-             f"{LEAD_MAGNET_URL} — takes 2 minutes, and happy to walk you through "
-             f"whatever it shows."),
-        ]
+        messages = []
     elif stage == "outline_sent":
         cs = random.choice(CASE_STUDIES) if CASE_STUDIES else (
             "had a client recently go from sub-£20K/month to £35K with 12% net profit"
@@ -1445,21 +1433,10 @@ def follow_up_message(conv: dict, count: int) -> str | None:
             f"Last shout — link's still here: {STARTUP_COURSE_URL}. Anytime.",
         ]
 
-    # ── Qualifying (slower 24h cadence — bot still mid-conversation) ──────
-    elif funnel == "lead_magnet":
-        messages = ["Hey — still there? Just checking in. Happy to send the calc whenever."]
-    elif funnel == "startup_course":
-        messages = ["Hey — still there? Happy to send the course link whenever."]
-    else:  # application funnel, qualifying state
-        cs = random.choice(CASE_STUDIES) if CASE_STUDIES else (
-            "had a client recently go from sub-£20K/month to £35K with 12% net profit"
-        )
-        cap = capacity_line()
-        messages = [
-            "Hey — still on the fence or anything I can clarify?",
-            f"Wanted to share something — {cs}. No pressure either way.",
-            f"Last one from me — {cap.lower()} If now's not the right time, no stress.",
-        ]
+    # ── Qualifying (incl. no-email-yet) — NO chasing. If they go quiet,
+    # they go quiet. Any queued rows archive silently on the next sweep.
+    else:
+        messages = []
 
     if count >= len(messages):
         return None
