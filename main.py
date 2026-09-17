@@ -1155,6 +1155,66 @@ _OUTSIDE_WINDOW_PATTERNS = (
 )
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Human takeover — when John replies to a lead by hand (voice note, text) the
+# bot must go silent on that thread for good. Meta echoes every outbound
+# message back to the webhook; anything echoed that the bot itself didn't
+# send = a human is in the thread. Stage "human_takeover" + archived=True
+# (no schema change) and the webhook drops all further inbound from them.
+# ─────────────────────────────────────────────────────────────────────────────
+HUMAN_TAKEOVER_STAGE = "human_takeover"
+_BOT_SENT_MIDS: dict[str, float] = {}        # message id -> unix time sent
+_LAST_BOT_SEND: dict[str, float] = {}        # recipient id -> unix time sent
+_BOT_SENT_GRACE_SECONDS = 20                 # echo within this of a bot send = ours
+
+
+def _remember_bot_send(recipient_id: str, body: str) -> None:
+    import time as _t
+    now = _t.time()
+    _LAST_BOT_SEND[recipient_id] = now
+    try:
+        mid = json.loads(body or "{}").get("message_id")
+        if mid:
+            _BOT_SENT_MIDS[mid] = now
+    except Exception:
+        pass
+    if len(_BOT_SENT_MIDS) > 2000:            # keep memory bounded
+        cutoff = now - 3600
+        for k in [k for k, v in _BOT_SENT_MIDS.items() if v < cutoff]:
+            _BOT_SENT_MIDS.pop(k, None)
+
+
+def _echo_is_from_bot(recipient_id: str, mid: str | None) -> bool:
+    import time as _t
+    if mid and mid in _BOT_SENT_MIDS:
+        return True
+    last = _LAST_BOT_SEND.get(recipient_id)
+    return bool(last and (_t.time() - last) < _BOT_SENT_GRACE_SECONDS)
+
+
+def mark_human_takeover(sender_id: str, reason: str = "manual reply") -> None:
+    conv = get_conversation(sender_id)
+    if conv and conv.get("stage") == HUMAN_TAKEOVER_STAGE:
+        return
+    logger.info(f"Human takeover for {sender_id} ({reason}) - bot silenced on this thread")
+    upsert_conversation(sender_id, {
+        "stage": HUMAN_TAKEOVER_STAGE,
+        "archived": True,
+        "awaiting_user": False,
+        "next_follow_up_at": None,
+    })
+
+
+def handle_outbound_echo(recipient_id: str | None, mid: str | None) -> None:
+    """Called for every echoed outbound message. If it wasn't ours, John sent it."""
+    if not recipient_id:
+        return
+    if _echo_is_from_bot(recipient_id, mid):
+        return
+    if get_conversation(recipient_id):
+        mark_human_takeover(recipient_id, "outbound echo not sent by bot")
+
+
 async def send_dm(recipient_id: str, text: str, *, delay: bool = True) -> dict:
     """Send a DM via the Instagram Graph API.
 
@@ -1177,6 +1237,7 @@ async def send_dm(recipient_id: str, text: str, *, delay: bool = True) -> dict:
         body = r.text or ""
         logger.info(f"IG API response: {r.status_code} {body[:200]}")
         if r.status_code == 200:
+            _remember_bot_send(recipient_id, body)
             return {"ok": True, "window_expired": False, "status": 200, "body": body}
         body_lower = body.lower()
         window_expired = any(p in body_lower for p in _OUTSIDE_WINDOW_PATTERNS)
@@ -1359,15 +1420,22 @@ async def receive_message(request: Request):
                 # ── DMs (v25 format) ─────────────────────────────────────
                 elif field == "messages":
                     sender_id = value.get("sender", {}).get("id")
-                    text      = value.get("message", {}).get("text")
+                    msg       = value.get("message", {}) or {}
+                    text      = msg.get("text")
+                    # Outbound echo (John or the bot sent something). Check BEFORE
+                    # the text guard — voice notes have no text, only attachments.
+                    if msg.get("is_echo") or (PAGE_ID and sender_id == PAGE_ID):
+                        handle_outbound_echo(value.get("recipient", {}).get("id"), msg.get("mid"))
+                        continue
                     if not text or not sender_id:
                         continue
-                    if PAGE_ID and sender_id == PAGE_ID:
-                        continue  # echo
 
                     conv = get_conversation(sender_id)
                     if not conv:
                         logger.info(f"Ignoring unsolicited DM from {sender_id} — not in a funnel")
+                        continue
+                    if conv.get("stage") == HUMAN_TAKEOVER_STAGE:
+                        logger.info(f"Human takeover active for {sender_id} — bot stays silent")
                         continue
 
                     reply = await get_claude_reply(sender_id, text)
@@ -1379,11 +1447,17 @@ async def receive_message(request: Request):
                 sender_id = event.get("sender", {}).get("id")
                 message   = event.get("message", {})
                 text      = message.get("text")
-                if message.get("is_echo") or not text or not sender_id:
+                if message.get("is_echo"):
+                    handle_outbound_echo(event.get("recipient", {}).get("id"), message.get("mid"))
+                    continue
+                if not text or not sender_id:
                     continue
                 conv = get_conversation(sender_id)
                 if not conv:
                     logger.info(f"Ignoring unsolicited DM (legacy) from {sender_id}")
+                    continue
+                if conv.get("stage") == HUMAN_TAKEOVER_STAGE:
+                    logger.info(f"Human takeover active for {sender_id} (legacy) — bot stays silent")
                     continue
                 reply = await get_claude_reply(sender_id, text)
                 if reply.strip().upper() != "IGNORE":
@@ -1646,6 +1720,31 @@ async def admin_follow_ups_resume(x_admin_key: str | None = Header(default=None)
     _set_follow_ups_flag("1")
     logger.info("Follow-ups RESUMED via admin.")
     return {"follow_ups_enabled": True}
+
+
+@app.post("/admin/takeover/set")
+async def admin_takeover_set(request: Request, x_admin_key: str | None = Header(default=None)):
+    """Silence the bot on a thread John is handling by hand. Body: {"ig_sender_id": "..."}"""
+    _check_admin(x_admin_key)
+    body = await request.json()
+    sid = str(body.get("ig_sender_id", "")).strip()
+    if not sid:
+        raise HTTPException(status_code=400, detail="ig_sender_id required")
+    mark_human_takeover(sid, "admin")
+    return {"ig_sender_id": sid, "stage": HUMAN_TAKEOVER_STAGE}
+
+
+@app.post("/admin/takeover/release")
+async def admin_takeover_release(request: Request, x_admin_key: str | None = Header(default=None)):
+    """Hand a thread back to the bot. Body: {"ig_sender_id": "...", "stage": "calculator_sent"}"""
+    _check_admin(x_admin_key)
+    body = await request.json()
+    sid = str(body.get("ig_sender_id", "")).strip()
+    if not sid:
+        raise HTTPException(status_code=400, detail="ig_sender_id required")
+    stage = body.get("stage") or "calculator_sent"
+    upsert_conversation(sid, {"stage": stage, "archived": False})
+    return {"ig_sender_id": sid, "stage": stage}
 
 
 @app.post("/admin/sales/increment")
