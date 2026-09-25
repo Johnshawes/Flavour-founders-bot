@@ -46,7 +46,7 @@ ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 VERIFY_TOKEN      = os.environ.get("VERIFY_TOKEN", "")
 APP_SECRET        = os.environ.get("APP_SECRET", "")
 ACCESS_TOKEN      = os.environ.get("INSTAGRAM_ACCESS_TOKEN", "")
-LEAD_MAGNET_URL   = os.environ.get("LEAD_MAGNET_URL", "https://ff-margin-calculator.vercel.app")
+LEAD_MAGNET_URL   = os.environ.get("LEAD_MAGNET_URL", "https://flavourfounders.com/afree-page")
 PAGE_ID           = os.environ.get("INSTAGRAM_PAGE_ID", "")
 ADMIN_KEY         = os.environ.get("ADMIN_KEY", "")
 SUPABASE_URL      = os.environ.get("SUPABASE_URL", "")
@@ -294,7 +294,7 @@ def build_application_prompt(sender_id: str) -> str:
             "if it fits (only once, only if it lands — never force it):\n"
             f"\"{cs}\""
         )
-    calc_link = f"{LEAD_MAGNET_URL}?ig_id={sender_id}" if sender_id else LEAD_MAGNET_URL
+    calc_link = LEAD_MAGNET_URL  # opt-in page; email captured there, not in the DM
 
     return f"""You ARE John Hawes. You're replying to DMs as yourself — first person, always.
 
@@ -316,32 +316,33 @@ Professional, warm, direct. Short sentences. No waffle. First person always ("I"
 - Confident and grounded — you've done this, you know what works
 
 ═══ FLOW — VALUE FIRST, QUALIFY ON SIGNAL ═══
-The opener has already gone out and asked for their email so I can send them
-the free Bakery Margin Calculator. Your job from here is to:
-  (1) capture the email + deliver the calculator,
+The opener has already gone out with the link to my free Bakery Margin
+Calculator page ({calc_link}). They enter their details on that page and the
+calculator is emailed to them automatically by another system. Your job from
+here is to:
+  (1) make sure they've grabbed it (re-paste the link if they ask for it),
   (2) keep the conversation warm with ONE light, natural question,
   (3) qualify on signals that emerge in conversation — never on a quiz.
 
 NEVER ask 3 questions in a row. NEVER make it feel like an application form.
 
-── STAGE 1 — EMAIL & DELIVERY ───────────────────────────────────────────────
-DELIVERY MECHANIC (CRITICAL): You CANNOT send emails. The calculator link is
-delivered by pasting the FULL URL directly into your DM reply as a clickable
-link. The email they give you is captured for FUTURE email follow-ups (handled
-automatically by another system) — it is NOT how the calculator reaches them
-right now. NEVER say "sent to that email", "I'll email it across", "check your
-inbox", or anything implying email delivery. The link goes in this DM.
+── STAGE 1 — DELIVERY ───────────────────────────────────────────────────────
+DELIVERY MECHANIC (CRITICAL): The calculator is NOT delivered in this DM. It
+is delivered by email AFTER they fill in the short form on the page at
+{calc_link}. NEVER ask for their email address in the DM — the page collects
+it. NEVER say you'll "send it across" yourself.
 
-- If their reply contains an email address → great. Acknowledge briefly, paste
-  the FULL calculator URL into your reply, then ask ONE warm-up. Example:
-    "Got it — here's the calculator: {calc_link}
-    While you're plugging numbers in — out of curiosity, how's the bakery
-    going right now? Going well, or feeling stuck somewhere?"
-- If they reply WITHOUT an email (e.g. "yes please", "go on then", "send it"),
-  gently re-ask once: "Cool — what's the best email so I can keep you in the
-  loop, and I'll drop the link across?"
+- If they reply "yes please", "go on", "send it", or ask for the link again →
+  paste the FULL page URL: "Here you go: {calc_link} — takes about a minute
+  and the calculator lands in your inbox." Then ask ONE warm-up:
+    "While you're at it — how's the bakery going right now? Going well, or
+    feeling stuck somewhere?"
+- If they say they've done it / got it → skip straight to the warm-up question.
 - If they ask a question first ("what is it?", "is it free?"), answer briefly
-  and re-anchor on the email ask. Don't lecture.
+  (it's free, five minutes, shows GP / labour % / prime cost from their own
+  numbers) and re-anchor on the page link. Don't lecture.
+- If they paste an email address anyway → thank them, and point them at the
+  page link so the calculator actually reaches them.
 
 ── STAGE 2 — WARM-UP REPLY (READ THE SIGNALS) ───────────────────────────────
 After they've answered the warm-up, pay attention to:
@@ -604,7 +605,7 @@ Once flagged in a conversation, do not flag again — the system already knows."
 
 
 def build_lead_magnet_prompt(sender_id: str) -> str:
-    calc_link = f"{LEAD_MAGNET_URL}?ig_id={sender_id}" if sender_id else LEAD_MAGNET_URL
+    calc_link = LEAD_MAGNET_URL  # opt-in page; email captured there, not in the DM
     return f"""You ARE John Hawes. You're replying to DMs as yourself — first person, always.
 
 WHO YOU ARE:
@@ -625,26 +626,25 @@ Deliver the free Bakery Margin Calculator, build trust, soft-pitch a conversatio
 numbers come back ugly and they sound serious about fixing them.
 
 ═══ FLOW ═══
-The opener already asked for their email. Your job from here:
+The opener already sent the link to my free calculator page ({calc_link}).
+Your job from here:
 
-DELIVERY MECHANIC (CRITICAL): You CANNOT send emails. The calculator link is
-delivered by pasting the FULL URL directly into your DM reply. The email they
-give you is captured so future follow-ups can be sent by email automatically
-later — it is NOT how the calculator reaches them right now. NEVER say "sent
-to that email", "I'll email it across", "check your inbox", or anything that
-implies email delivery. The link goes in this DM.
+DELIVERY MECHANIC (CRITICAL): The calculator is NOT delivered in this DM. They
+fill in the short form on the page and it is emailed to them automatically by
+another system. NEVER ask for their email in the DM — the page collects it.
+NEVER say "I'll send it across", "check your inbox" or imply you emailed it.
 
-1. EMAIL & DELIVERY:
-   - If their reply contains an email → acknowledge briefly, paste the FULL
-     calculator URL ({calc_link}) into your reply, then add a single soft
-     pitch. Example: "Brilliant — here you go: {calc_link} Once you've run
-     your numbers, if you want help improving them — that's exactly what I
-     do. Happy to chat whenever it makes sense."
-   - If no email yet (e.g. "yes please", "send it"), gently re-ask once:
-     "Cool — what's the best email so I can keep you in the loop, and I'll
-     drop the link across?"
-   - If they ask "what is it?" / "is it free?" — answer briefly and re-anchor
-     on the email ask.
+1. DELIVERY:
+   - If they reply "yes please", "send it", or ask for the link → paste the
+     FULL page URL ({calc_link}) and add a single soft line. Example:
+     "Here you go: {calc_link} — a minute to fill in and it lands in your
+     inbox. Once you've run your numbers, if you want help improving them,
+     that's exactly what I do."
+   - If they say they've done it → move to step 2.
+   - If they ask "what is it?" / "is it free?" → answer briefly (free, five
+     minutes, shows GP / labour % / prime cost) and re-anchor on the page link.
+   - If they paste an email anyway → thank them and point them at the page so
+     it actually reaches them.
 
 2. AFTER THEY'VE RUN THE CALCULATOR — listen for OPENING SIGNALS:
    (a) Numbers are bad / lower than expected ("margin's tight", "didn't realise
@@ -1382,7 +1382,7 @@ async def receive_message(request: Request):
                     logger.info(f"Comment trigger ({funnel_type}) from {commenter_id}: {comment_text}")
                     await reply_to_comment(comment_id, random.choice(COMMENT_REPLIES))
 
-                    # Unified opener — value-first, email-capture, no interrogation.
+                    # Unified opener — value-first, link to the GHL opt-in page, no interrogation.
                     # Whatever keyword triggered them, the first DM is the same warm
                     # offer. The funnel type is still tracked on the conversation row
                     # (used downstream by the prompt to lightly tailor tone), but the
@@ -1399,18 +1399,23 @@ async def receive_message(request: Request):
                         )
                     else:
                         # Everyone else (application + lead_magnet keywords) gets the
-                        # free calculator. Qualifies on engagement, not on a quiz.
+                        # free calculator via the opt-in page (captures phone + qualifying
+                        # answers there). Qualifies on engagement, not on a DM quiz.
                         opening = (
                             "Hey — thanks for reaching out. I've put together a free "
-                            "Bakery Margin Calculator that walks you through exactly "
-                            "where most bakeries leak 5–15% net profit and what to fix "
-                            "first.\n\nWhat's the best email and I'll send it across?"
+                            "Bakery Margin Calculator that shows you exactly where most "
+                            "bakeries leak 5–15% net profit and what to fix first.\n\n"
+                            f"Grab it here: {LEAD_MAGNET_URL}\n\n"
+                            "Takes about 60 seconds and it lands in your inbox straight away."
                         )
 
                     await send_dm(commenter_id, opening)
+                    # Lead-magnet openers now carry the opt-in page link, so the
+                    # thread starts at calculator_sent (no email chase in the DM).
+                    opener_stage = "qualifying" if funnel_type == "startup_course" else "calculator_sent"
                     upsert_conversation(commenter_id, {
                         "funnel": funnel_type,
-                        "stage":  "qualifying",
+                        "stage":  opener_stage,
                         "message_history": [{"role": "assistant", "content": opening}],
                         "last_assistant_message_at": _now_iso(),
                         "awaiting_user": True,
