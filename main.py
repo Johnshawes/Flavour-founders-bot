@@ -2098,6 +2098,7 @@ async def health():
         "instagram":  token_valid,
         "instagram_token_days_left": days_left,
         "ghl":        bool(GHL_API_KEY and GHL_LOCATION_ID),
+        "lead_magnet_url": LEAD_MAGNET_URL,
         "whop":       bool(WHOP_WEBHOOK_SECRET),
         "lens": {
             "ghl_api_key":     len(GHL_API_KEY),
