@@ -47,6 +47,18 @@ VERIFY_TOKEN      = os.environ.get("VERIFY_TOKEN", "")
 APP_SECRET        = os.environ.get("APP_SECRET", "")
 ACCESS_TOKEN      = os.environ.get("INSTAGRAM_ACCESS_TOKEN", "")
 LEAD_MAGNET_URL   = os.environ.get("LEAD_MAGNET_URL", "https://flavourfounders.com/free")
+# The link the bot actually pastes into DMs. UTM-tagged so GHL attribution shows
+# DM clicks separately from bio clicks / John's own tests. The /free redirect
+# passes query strings through (verified 2026-09-28). Stage detection uses the
+# bare LEAD_MAGNET_URL as a substring, so it still matches.
+LEAD_MAGNET_DM_URL = LEAD_MAGNET_URL + "?utm_source=instagram&utm_medium=dm&utm_campaign=calculator"
+# Reply pacing (seconds). Openers (comment reply + first DM) always go out
+# instantly: someone who just typed a keyword is watching their inbox and does
+# not wait 2-4 minutes. Conversational replies keep a short pause so two
+# back-to-back messages from a lead don't race each other. Set REPLY_DELAY_MAX=0
+# to make everything instant.
+REPLY_DELAY_MIN = float(os.environ.get("REPLY_DELAY_MIN", "5"))
+REPLY_DELAY_MAX = float(os.environ.get("REPLY_DELAY_MAX", "15"))
 PAGE_ID           = os.environ.get("INSTAGRAM_PAGE_ID", "")
 ADMIN_KEY         = os.environ.get("ADMIN_KEY", "")
 SUPABASE_URL      = os.environ.get("SUPABASE_URL", "")
@@ -294,7 +306,7 @@ def build_application_prompt(sender_id: str) -> str:
             "if it fits (only once, only if it lands — never force it):\n"
             f"\"{cs}\""
         )
-    calc_link = LEAD_MAGNET_URL  # opt-in page; email captured there, not in the DM
+    calc_link = LEAD_MAGNET_DM_URL  # opt-in page (UTM-tagged); email captured there, not in the DM
 
     return f"""You ARE John Hawes. You're replying to DMs as yourself — first person, always.
 
@@ -316,13 +328,32 @@ Professional, warm, direct. Short sentences. No waffle. First person always ("I"
 - Confident and grounded — you've done this, you know what works
 
 ═══ FLOW — VALUE FIRST, QUALIFY ON SIGNAL ═══
-The opener has already gone out with the link to my free Bakery Margin
-Calculator page ({calc_link}). They enter their details on that page and the
-calculator is emailed to them automatically by another system. Your job from
-here is to:
-  (1) make sure they've grabbed it (re-paste the link if they ask for it),
+The opener has already gone out. It did NOT contain a link. It asked:
+"Are you running a bakery right now, or planning one?"
+Your job from here is to:
+  (0) get a YES to the calculator offer BEFORE you paste the link (Stage 0),
+  (1) paste the link once, then make sure they've grabbed it,
   (2) keep the conversation warm with ONE light, natural question,
   (3) qualify on signals that emerge in conversation — never on a quiz.
+
+── STAGE 0 — WARM-UP → OFFER → LINK (two micro-commitments first) ───────────
+- They RUN a bakery / café / home bakery (any answer that says they trade
+  now) → offer, don't paste yet:
+    "Nice. I've built a free margin calculator that shows where bakeries
+    leak 5-15% net and what to fix first. Takes about 60 seconds and it
+    lands in your inbox. Want it?"
+- They say YES / "go on" / "send it" / "yes please" (or they asked for the
+  calculator outright) → paste the FULL link, once:
+    "Here you go: {calc_link} — there's a short form on the page so I can
+    point you at the right fix."
+- They're PLANNING / pre-launch / no premises yet → the calculator won't
+  help them. Warm exit to the £27 course, paste its FULL URL:
+    "Good place to be. The calculator's built for bakeries already trading,
+    so it won't tell you much yet. What will help is my startup course — 13
+    modules, 8 hours, was £999, yours for £27: {STARTUP_COURSE_URL}"
+- Unclear answer → ONE short clarifying line, then back to the offer.
+NEVER paste the calculator link before they've said yes to the offer. The
+only exception is when they explicitly ask for it.
 
 NEVER ask 3 questions in a row. NEVER make it feel like an application form.
 
@@ -332,9 +363,9 @@ is delivered by email AFTER they fill in the short form on the page at
 {calc_link}. NEVER ask for their email address in the DM — the page collects
 it. NEVER say you'll "send it across" yourself.
 
-- If they reply "yes please", "go on", "send it", or ask for the link again →
-  paste the FULL page URL: "Here you go: {calc_link} — takes about a minute
-  and the calculator lands in your inbox." Then ask ONE warm-up:
+- If they ask for the link again → re-paste the FULL page URL:
+  "Here you go: {calc_link} — takes about a minute and the calculator lands
+  in your inbox." After the link has gone out, ask ONE warm-up:
     "While you're at it — how's the bakery going right now? Going well, or
     feeling stuck somewhere?"
 - If they say they've done it / got it → skip straight to the warm-up question.
@@ -605,7 +636,7 @@ Once flagged in a conversation, do not flag again — the system already knows."
 
 
 def build_lead_magnet_prompt(sender_id: str) -> str:
-    calc_link = LEAD_MAGNET_URL  # opt-in page; email captured there, not in the DM
+    calc_link = LEAD_MAGNET_DM_URL  # opt-in page (UTM-tagged); email captured there, not in the DM
     return f"""You ARE John Hawes. You're replying to DMs as yourself — first person, always.
 
 WHO YOU ARE:
@@ -626,20 +657,38 @@ Deliver the free Bakery Margin Calculator, build trust, soft-pitch a conversatio
 numbers come back ugly and they sound serious about fixing them.
 
 ═══ FLOW ═══
-The opener already sent the link to my free calculator page ({calc_link}).
+The opener has already gone out. It did NOT contain a link. It asked:
+"Are you running a bakery right now, or planning one?"
 Your job from here:
+
+0. WARM-UP → OFFER → LINK (get two small yeses before the link goes out):
+   - They RUN a bakery / café / home bakery (trading now) → offer, don't
+     paste yet: "Nice. I've built a free margin calculator that shows where
+     bakeries leak 5-15% net and what to fix first. Takes about 60 seconds
+     and it lands in your inbox. Want it?"
+   - They say YES / "go on" / "send it" (or asked for the calculator
+     outright) → paste the FULL link once: "Here you go: {calc_link} —
+     there's a short form on the page so I can point you at the right fix."
+   - PLANNING / pre-launch / no premises → warm exit to the £27 course and
+     paste its FULL URL: "Good place to be. The calculator's built for
+     bakeries already trading, so it won't tell you much yet. What will help
+     is my startup course — 13 modules, 8 hours, was £999, yours for £27:
+     {STARTUP_COURSE_URL}"
+   - Unclear → ONE short clarifying line, then back to the offer.
+   NEVER paste the calculator link before they've said yes to the offer,
+   unless they explicitly ask for it.
 
 DELIVERY MECHANIC (CRITICAL): The calculator is NOT delivered in this DM. They
 fill in the short form on the page and it is emailed to them automatically by
 another system. NEVER ask for their email in the DM — the page collects it.
 NEVER say "I'll send it across", "check your inbox" or imply you emailed it.
 
-1. DELIVERY:
-   - If they reply "yes please", "send it", or ask for the link → paste the
-     FULL page URL ({calc_link}) and add a single soft line. Example:
-     "Here you go: {calc_link} — a minute to fill in and it lands in your
-     inbox. Once you've run your numbers, if you want help improving them,
-     that's exactly what I do."
+1. DELIVERY (after the link has gone out):
+   - If they ask for the link again → re-paste the FULL page URL
+     ({calc_link}) with a single soft line. Example: "Here you go:
+     {calc_link} — a minute to fill in and it lands in your inbox. Once
+     you've run your numbers, if you want help improving them, that's
+     exactly what I do."
    - If they say they've done it → move to step 2.
    - If they ask "what is it?" / "is it free?" → answer briefly (free, five
      minutes, shows GP / labour % / prime cost) and re-anchor on the page link.
@@ -1123,13 +1172,15 @@ def comment_has_trigger(text: str) -> str | None:
 
 
 async def human_delay():
-    delay = random.uniform(45, 240)
+    if REPLY_DELAY_MAX <= 0:
+        return
+    delay = random.uniform(min(REPLY_DELAY_MIN, REPLY_DELAY_MAX), REPLY_DELAY_MAX)
     logger.info(f"Waiting {delay:.0f}s before responding...")
     await asyncio.sleep(delay)
 
 
 async def reply_to_comment(comment_id: str, message: str):
-    await human_delay()
+    # No delay: the public comment reply is the first signal the bot is alive.
     url = f"https://graph.instagram.com/v21.0/{comment_id}/replies"
     params = {"message": message, "access_token": ACCESS_TOKEN}
     try:
@@ -1398,21 +1449,24 @@ async def receive_message(request: Request):
                             "details across?"
                         )
                     else:
-                        # Everyone else (application + lead_magnet keywords) gets the
-                        # free calculator via the opt-in page (captures phone + qualifying
-                        # answers there). Qualifies on engagement, not on a DM quiz.
+                        # Everyone else (application + lead_magnet keywords): warm
+                        # two-step opener. No link yet. Step 1 asks whether they run
+                        # a bakery (cheap ICP signal + first micro-commitment); the
+                        # Claude prompt then offers the calculator and only pastes
+                        # the opt-in link once they say yes (second micro-commitment).
+                        # 2026-09-28: cold link-in-first-DM got ~0 real form
+                        # completions from 12+ sends.
                         opening = (
-                            "Hey — thanks for reaching out. I've put together a free "
-                            "Bakery Margin Calculator that shows you exactly where most "
-                            "bakeries leak 5–15% net profit and what to fix first.\n\n"
-                            f"Grab it here: {LEAD_MAGNET_URL}\n\n"
-                            "Takes about 60 seconds and it lands in your inbox straight away."
+                            "Hey, thanks for the message. Quick one before I send "
+                            "anything over. Are you running a bakery right now, or "
+                            "planning one?"
                         )
 
-                    await send_dm(commenter_id, opening)
-                    # Lead-magnet openers now carry the opt-in page link, so the
-                    # thread starts at calculator_sent (no email chase in the DM).
-                    opener_stage = "qualifying" if funnel_type == "startup_course" else "calculator_sent"
+                    # Instant: no human delay on the opener.
+                    await send_dm(commenter_id, opening, delay=False)
+                    # Thread starts at qualifying; it flips to calculator_sent
+                    # automatically when the bot pastes the opt-in link.
+                    opener_stage = "qualifying"
                     upsert_conversation(commenter_id, {
                         "funnel": funnel_type,
                         "stage":  opener_stage,
@@ -2099,6 +2153,8 @@ async def health():
         "instagram_token_days_left": days_left,
         "ghl":        bool(GHL_API_KEY and GHL_LOCATION_ID),
         "lead_magnet_url": LEAD_MAGNET_URL,
+        "lead_magnet_dm_url": LEAD_MAGNET_DM_URL,
+        "reply_delay_s": [REPLY_DELAY_MIN, REPLY_DELAY_MAX],
         "whop":       bool(WHOP_WEBHOOK_SECRET),
         "lens": {
             "ghl_api_key":     len(GHL_API_KEY),
