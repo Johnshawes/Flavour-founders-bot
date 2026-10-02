@@ -1422,6 +1422,10 @@ async def receive_message(request: Request):
                     commenter_id = value.get("from", {}).get("id")
                     if not comment_id or not commenter_id:
                         continue
+                    # Our own comments (e.g. the first comment restating the keyword)
+                    # must never trigger the bot.
+                    if str(commenter_id) in {PAGE_ID, str(entry.get("id", ""))}:
+                        continue
                     if is_comment_processed(comment_id):
                         continue
                     mark_comment_processed(comment_id)

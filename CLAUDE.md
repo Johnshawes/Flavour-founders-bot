@@ -14,6 +14,7 @@ Each keyword is followed by its funnel type: `application` or `lead_magnet`.
 - sign me up | application
 - help | application
 - freedom | application
+- reset | application
 
 ### Lead Magnet Funnel (curious/early stage — deliver value → soft sell)
 - system | lead_magnet
@@ -21,6 +22,7 @@ Each keyword is followed by its funnel type: `application` or `lead_magnet`.
 - calculator | lead_magnet
 - free | lead_magnet
 - guide | lead_magnet
+- audit | lead_magnet
 
 ### Startup Course Funnel (£27 tripwire — DIY bakery startup course)
 - startup | startup_course
