@@ -52,6 +52,10 @@ LEAD_MAGNET_URL   = os.environ.get("LEAD_MAGNET_URL", "https://flavourfounders.c
 # passes query strings through (verified 2026-09-28). Stage detection uses the
 # bare LEAD_MAGNET_URL as a substring, so it still matches.
 LEAD_MAGNET_DM_URL = LEAD_MAGNET_URL + "?utm_source=instagram&utm_medium=dm&utm_campaign=calculator"
+# Application funnel (RESET + other high-intent keywords). /apply is a 301 to
+# the GHL application funnel "Apply here" step. Same UTM trick as above.
+APPLICATION_URL    = os.environ.get("APPLICATION_URL", "https://flavourfounders.com/apply")
+APPLICATION_DM_URL = APPLICATION_URL + "?utm_source=instagram&utm_medium=dm&utm_campaign=application"
 # Reply pacing (seconds). Openers (comment reply + first DM) always go out
 # instantly: someone who just typed a keyword is watching their inbox and does
 # not wait 2-4 minutes. Conversational replies keep a short pause so two
@@ -109,14 +113,14 @@ FOLLOW_UP_GAPS_CALCULATOR = ()
 FOLLOW_UP_GAPS_QUALIFYING = ()
 # Stages that trigger the aggressive cadence. `stage` flips to one of these
 # the moment the bot drops the corresponding URL into a reply.
-CONTENT_DELIVERY_STAGES = ("calculator_sent", "outline_sent", "booking_sent", "course_sent")
+CONTENT_DELIVERY_STAGES = ("calculator_sent", "application_sent", "outline_sent", "booking_sent", "course_sent")
 
 
 def gaps_for_stage(stage: str) -> tuple:
     """Cadence for a conversation stage. Calculator delivery gets the single
     no-chase follow-up; other content stages keep the aggressive 3-step;
     everything else (still qualifying) runs the slow cadence."""
-    if stage == "calculator_sent":
+    if stage in ("calculator_sent", "application_sent"):
         return FOLLOW_UP_GAPS_CALCULATOR
     if stage in CONTENT_DELIVERY_STAGES:
         return FOLLOW_UP_GAPS_AGGRESSIVE
@@ -306,7 +310,7 @@ def build_application_prompt(sender_id: str) -> str:
             "if it fits (only once, only if it lands — never force it):\n"
             f"\"{cs}\""
         )
-    calc_link = LEAD_MAGNET_DM_URL  # opt-in page (UTM-tagged); email captured there, not in the DM
+    apply_link = APPLICATION_DM_URL  # application funnel page (UTM-tagged)
 
     return f"""You ARE John Hawes. You're replying to DMs as yourself — first person, always.
 
@@ -331,49 +335,48 @@ Professional, warm, direct. Short sentences. No waffle. First person always ("I"
 The opener has already gone out. It did NOT contain a link. It asked:
 "Are you running a bakery right now, or planning one?"
 Your job from here is to:
-  (0) get a YES to the calculator offer BEFORE you paste the link (Stage 0),
-  (1) paste the link once, then make sure they've grabbed it,
+  (0) get a YES to the application offer BEFORE you paste the link (Stage 0),
+  (1) paste the link once, then make sure they've done it,
   (2) keep the conversation warm with ONE light, natural question,
   (3) qualify on signals that emerge in conversation — never on a quiz.
 
 ── STAGE 0 — WARM-UP → OFFER → LINK (two micro-commitments first) ───────────
-- They RUN a bakery / café / home bakery (any answer that says they trade
-  now) → offer, don't paste yet:
-    "Nice. I've built a free margin calculator that shows where bakeries
-    leak 5-15% net and what to fix first. Takes about 60 seconds and it
-    lands in your inbox. Want it?"
-- They say YES / "go on" / "send it" / "yes please" (or they asked for the
-  calculator outright) → paste the FULL link, once:
-    "Here you go: {calc_link} — there's a short form on the page so I can
-    point you at the right fix."
-- They're PLANNING / pre-launch / no premises yet → the calculator won't
-  help them. Warm exit to the £27 course, paste its FULL URL:
-    "Good place to be. The calculator's built for bakeries already trading,
-    so it won't tell you much yet. What will help is my startup course — 13
+- They RUN a bakery / café (any answer that says they trade now) → offer,
+  don't paste yet:
+    "Nice. I work 1:1 with a small number of bakery owners to get them to
+    5-10% net and out of the daily grind. There's a short application —
+    takes a couple of minutes and I read every one myself. Want the link?"
+- They say YES / "go on" / "send it" / "yes please" (or they asked how to
+  apply / join outright) → paste the FULL link, once:
+    "Here you go: {apply_link} — fill that in and I'll come back to you
+    personally."
+- They're PLANNING / pre-launch / no premises yet → the programme won't
+  help them yet. Warm exit to the £27 course, paste its FULL URL:
+    "Good place to be. The programme's built for bakeries already trading,
+    so it's not the right fit yet. What will help is my startup course — 13
     modules, 8 hours, was £999, yours for £27: {STARTUP_COURSE_URL}"
 - Unclear answer → ONE short clarifying line, then back to the offer.
-NEVER paste the calculator link before they've said yes to the offer. The
+NEVER paste the application link before they've said yes to the offer. The
 only exception is when they explicitly ask for it.
 
 NEVER ask 3 questions in a row. NEVER make it feel like an application form.
 
 ── STAGE 1 — DELIVERY ───────────────────────────────────────────────────────
-DELIVERY MECHANIC (CRITICAL): The calculator is NOT delivered in this DM. It
-is delivered by email AFTER they fill in the short form on the page at
-{calc_link}. NEVER ask for their email address in the DM — the page collects
-it. NEVER say you'll "send it across" yourself.
+DELIVERY MECHANIC (CRITICAL): The application lives on the page at
+{apply_link}. NEVER ask for their email address or their numbers in the DM —
+the application collects them. NEVER say you'll "send it across" yourself.
 
 - If they ask for the link again → re-paste the FULL page URL:
-  "Here you go: {calc_link} — takes about a minute and the calculator lands
-  in your inbox." After the link has gone out, ask ONE warm-up:
+  "Here you go: {apply_link} — couple of minutes and I'll review it
+  personally." After the link has gone out, ask ONE warm-up:
     "While you're at it — how's the bakery going right now? Going well, or
     feeling stuck somewhere?"
-- If they say they've done it / got it → skip straight to the warm-up question.
-- If they ask a question first ("what is it?", "is it free?"), answer briefly
-  (it's free, five minutes, shows GP / labour % / prime cost from their own
-  numbers) and re-anchor on the page link. Don't lecture.
+- If they say they've done it / submitted → skip straight to the warm-up question.
+- If they ask a question first ("what is it?", "what does it cost?"), answer
+  briefly (180-day 1:1 programme, three phases, application first so I can
+  check it's the right fit) and re-anchor on the page link. Don't lecture.
 - If they paste an email address anyway → thank them, and point them at the
-  page link so the calculator actually reaches them.
+  page link so the application actually reaches me.
 
 ── STAGE 2 — WARM-UP REPLY (READ THE SIGNALS) ───────────────────────────────
 After they've answered the warm-up, pay attention to:
@@ -1367,7 +1370,9 @@ async def get_claude_reply(sender_id: str, user_message: str) -> str:
             # in the same message is still primarily an outline delivery, so
             # PROGRAMME_OUTLINE_URL takes precedence over BOOKING_URL.
             new_stage: str | None = None
-            if LEAD_MAGNET_URL in reply:
+            if APPLICATION_URL in reply:
+                new_stage = "application_sent"
+            elif LEAD_MAGNET_URL in reply:
                 new_stage = "calculator_sent"
             elif PROGRAMME_OUTLINE_URL in reply:
                 new_stage = "outline_sent"
@@ -1437,7 +1442,9 @@ async def receive_message(request: Request):
                     logger.info(f"Comment trigger ({funnel_type}) from {commenter_id}: {comment_text}")
                     await reply_to_comment(comment_id, random.choice(COMMENT_REPLIES))
 
-                    # Unified opener — value-first, link to the GHL opt-in page, no interrogation.
+                    # Unified opener — value-first, no link yet, no interrogation. The
+                    # funnel decides WHICH link the prompt pastes after the first yes:
+                    # application → /apply, lead_magnet → /free (opt-in page).
                     # Whatever keyword triggered them, the first DM is the same warm
                     # offer. The funnel type is still tracked on the conversation row
                     # (used downstream by the prompt to lightly tailor tone), but the
@@ -1542,9 +1549,10 @@ def follow_up_message(conv: dict, count: int) -> str | None:
     archives the row in that case."""
     stage  = conv.get("stage", "qualifying")
 
-    # ── Calculator delivered — NO follow-ups. GHL email nurture takes over.
-    # Returning None makes the sweep archive any already-queued rows silently.
-    if stage == "calculator_sent":
+    # ── Calculator / application link delivered — NO DM follow-ups. GHL
+    # workflows take over. Returning None makes the sweep archive any
+    # already-queued rows silently.
+    if stage in ("calculator_sent", "application_sent"):
         messages = []
     elif stage == "outline_sent":
         cs = random.choice(CASE_STUDIES) if CASE_STUDIES else (
@@ -2158,6 +2166,8 @@ async def health():
         "ghl":        bool(GHL_API_KEY and GHL_LOCATION_ID),
         "lead_magnet_url": LEAD_MAGNET_URL,
         "lead_magnet_dm_url": LEAD_MAGNET_DM_URL,
+        "application_url": APPLICATION_URL,
+        "application_dm_url": APPLICATION_DM_URL,
         "reply_delay_s": [REPLY_DELAY_MIN, REPLY_DELAY_MAX],
         "whop":       bool(WHOP_WEBHOOK_SECRET),
         "lens": {
