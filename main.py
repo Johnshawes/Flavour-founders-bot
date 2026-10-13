@@ -80,6 +80,10 @@ GHL_BASE_URL    = os.environ.get("GHL_BASE_URL", "https://services.leadconnector
 # moment someone comments an application keyword (RESET etc.). GHL then emails
 # John so he can jump into the DM thread while the lead is hot. Empty = off.
 APPLICATION_ALERT_WEBHOOK_URL = os.environ.get("APPLICATION_ALERT_WEBHOOK_URL", "")
+# Simpler path (default): email John straight through GHL's conversations API,
+# no workflow needed. The target is a GHL contact id (John's own record) read
+# from bot_config key `application_alert_contact_id`, env var as fallback.
+APPLICATION_ALERT_CONTACT_ID = os.environ.get("APPLICATION_ALERT_CONTACT_ID", "")
 
 PROGRAMME_OUTLINE_URL = "https://ff-programme-outline.vercel.app"
 WHOP_PROGRAMME_URL    = "https://whop.com/checkout/plan_PNt9PcJaESP6i"
@@ -1160,6 +1164,55 @@ async def maybe_capture_email(
         upsert_conversation(sender_id, {"ghl_contact_id": contact_id})
 
 
+def _alert_contact_id() -> str:
+    """GHL contact id to email on an application keyword. bot_config wins so it
+    can be changed without a redeploy; env var is the fallback."""
+    if supabase:
+        try:
+            rows = supabase.table("bot_config").select("value").eq(
+                "key", "application_alert_contact_id"
+            ).execute().data or []
+            if rows and rows[0].get("value"):
+                return rows[0]["value"].strip()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("bot_config read failed (application_alert_contact_id): %s", e)
+    return APPLICATION_ALERT_CONTACT_ID
+
+
+async def _send_alert_email(contact_id: str, sender_id: str, handle: str, trigger_text: str) -> bool:
+    """Email John via GHL conversations API. Returns True on 2xx."""
+    if not GHL_API_KEY:
+        return False
+    profile = f"https://instagram.com/{handle}" if handle else "(username not in webhook)"
+    subject = f"Hot lead on Instagram: @{handle or 'unknown'} just typed an apply keyword"
+    html = (
+        f"<p><b>@{handle or 'unknown'}</b> just commented an application keyword.</p>"
+        f"<p>What they wrote:<br><i>{(trigger_text or '').strip()[:500]}</i></p>"
+        f"<p>Profile: <a href=\"{profile}\">{profile}</a><br>"
+        f"The bot has sent the warm opener. Reply in the Instagram thread yourself within the hour; "
+        f"the bot goes quiet on any thread you reply to.</p>"
+        f"<p style=\"color:#888;font-size:12px\">IG sender id {sender_id} · {_now_iso()}</p>"
+    )
+    payload = {"type": "Email", "contactId": contact_id, "subject": subject, "html": html}
+    headers = {
+        "Authorization": f"Bearer {GHL_API_KEY}",
+        "Version": "2021-04-15",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.post(f"{GHL_BASE_URL}/conversations/messages", json=payload, headers=headers)
+        ok = r.status_code in (200, 201)
+        (logger.info if ok else logger.error)(
+            "Application alert email for @%s: HTTP %s %s", handle, r.status_code, "" if ok else r.text[:200]
+        )
+        return ok
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Application alert email failed for @%s: %s", handle, e)
+        return False
+
+
 async def alert_application_keyword(
     sender_id: str,
     username: str | None,
@@ -1169,9 +1222,14 @@ async def alert_application_keyword(
     """Fire-and-forget POST to the GHL inbound-webhook workflow so John gets an
     email the moment an application keyword is triggered. Never blocks or
     raises — a failed alert must not affect the DM flow."""
-    if not APPLICATION_ALERT_WEBHOOK_URL or funnel != "application":
+    if funnel != "application":
         return
     handle = (username or "").lstrip("@")
+    contact_id = _alert_contact_id()
+    if contact_id:
+        await _send_alert_email(contact_id, sender_id, handle, trigger_text)
+    if not APPLICATION_ALERT_WEBHOOK_URL:
+        return
     payload = {
         "event": "application_keyword",
         "ig_sender_id": sender_id,
@@ -1740,6 +1798,18 @@ def _check_admin(header_key: str | None):
         raise HTTPException(status_code=403, detail="Forbidden")
 
 
+@app.post("/admin/alerts/test")
+async def admin_alerts_test(x_admin_key: str | None = Header(default=None)):
+    """Send a sample apply-keyword alert email to the configured contact.
+    Proves the GHL key has conversations/message.write scope after deploy."""
+    _check_admin(x_admin_key)
+    contact_id = _alert_contact_id()
+    if not contact_id:
+        raise HTTPException(status_code=400, detail="application_alert_contact_id not set")
+    ok = await _send_alert_email(contact_id, "test", "example_bakery", "RESET (test alert)")
+    return {"sent": ok, "contact_id": contact_id}
+
+
 @app.post("/admin/clients/increment")
 async def admin_clients_increment(x_admin_key: str | None = Header(default=None)):
     """Bump current_clients_this_month by 1 (call when you close a deal)."""
@@ -2207,7 +2277,7 @@ async def health():
         "ghl":        bool(GHL_API_KEY and GHL_LOCATION_ID),
         "lead_magnet_url": LEAD_MAGNET_URL,
         "lead_magnet_dm_url": LEAD_MAGNET_DM_URL,
-        "application_alert_configured": bool(APPLICATION_ALERT_WEBHOOK_URL),
+        "application_alert_configured": bool(APPLICATION_ALERT_WEBHOOK_URL or _alert_contact_id()),
         "application_url": APPLICATION_URL,
         "application_dm_url": APPLICATION_DM_URL,
         "reply_delay_s": [REPLY_DELAY_MIN, REPLY_DELAY_MAX],
