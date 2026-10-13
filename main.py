@@ -76,6 +76,10 @@ AUDIT_PAYMENT_URL = os.environ.get("AUDIT_PAYMENT_URL", "https://whop.com/checko
 GHL_API_KEY     = os.environ.get("GHL_API_KEY", "")
 GHL_LOCATION_ID = os.environ.get("GHL_LOCATION_ID", "")
 GHL_BASE_URL    = os.environ.get("GHL_BASE_URL", "https://services.leadconnectorhq.com")
+# Apply-keyword alert: POST to a GHL "Inbound Webhook" workflow trigger the
+# moment someone comments an application keyword (RESET etc.). GHL then emails
+# John so he can jump into the DM thread while the lead is hot. Empty = off.
+APPLICATION_ALERT_WEBHOOK_URL = os.environ.get("APPLICATION_ALERT_WEBHOOK_URL", "")
 
 PROGRAMME_OUTLINE_URL = "https://ff-programme-outline.vercel.app"
 WHOP_PROGRAMME_URL    = "https://whop.com/checkout/plan_PNt9PcJaESP6i"
@@ -1156,6 +1160,35 @@ async def maybe_capture_email(
         upsert_conversation(sender_id, {"ghl_contact_id": contact_id})
 
 
+async def alert_application_keyword(
+    sender_id: str,
+    username: str | None,
+    trigger_text: str,
+    funnel: str,
+) -> None:
+    """Fire-and-forget POST to the GHL inbound-webhook workflow so John gets an
+    email the moment an application keyword is triggered. Never blocks or
+    raises — a failed alert must not affect the DM flow."""
+    if not APPLICATION_ALERT_WEBHOOK_URL or funnel != "application":
+        return
+    handle = (username or "").lstrip("@")
+    payload = {
+        "event": "application_keyword",
+        "ig_sender_id": sender_id,
+        "ig_handle": handle or "unknown",
+        "ig_profile_url": f"https://instagram.com/{handle}" if handle else "",
+        "trigger_text": (trigger_text or "")[:500],
+        "funnel": funnel,
+        "triggered_at": _now_iso(),
+    }
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.post(APPLICATION_ALERT_WEBHOOK_URL, json=payload)
+            logger.info("Application alert sent for %s (%s): HTTP %s", sender_id, handle, r.status_code)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Application alert failed for %s: %s", sender_id, e)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Instagram API helpers
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1486,6 +1519,14 @@ async def receive_message(request: Request):
                         "awaiting_user": True,
                         "next_follow_up_at": None,
                     })
+                    # Hot-lead alert (application keywords only). Comment webhooks
+                    # carry the commenter's username; DMs don't.
+                    asyncio.create_task(alert_application_keyword(
+                        commenter_id,
+                        value.get("from", {}).get("username"),
+                        comment_text,
+                        funnel_type,
+                    ))
 
                 # ── DMs (v25 format) ─────────────────────────────────────
                 elif field == "messages":
@@ -2166,6 +2207,7 @@ async def health():
         "ghl":        bool(GHL_API_KEY and GHL_LOCATION_ID),
         "lead_magnet_url": LEAD_MAGNET_URL,
         "lead_magnet_dm_url": LEAD_MAGNET_DM_URL,
+        "application_alert_configured": bool(APPLICATION_ALERT_WEBHOOK_URL),
         "application_url": APPLICATION_URL,
         "application_dm_url": APPLICATION_DM_URL,
         "reply_delay_s": [REPLY_DELAY_MIN, REPLY_DELAY_MAX],
