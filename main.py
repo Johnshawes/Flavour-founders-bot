@@ -358,8 +358,8 @@ feel they're in the wrong place.
   the offer — the application form does the filtering, and one fewer reply
   means fewer people lost between steps):
     "Nice. I work 1:1 with a small number of bakery, café and coffee shop
-    owners to get them to 10-20% net and out of the daily grind. Let's
-    explore your options: {apply_link}"
+    owners to get them to 10-20% net profit whilst working less than 8
+    hours a week in the business. Let's explore your options: {apply_link}"
   Keep it exactly that short. No "fill that in", no "I'll come back to you".
 - They're PLANNING / pre-launch / no premises yet → the programme won't
   help them yet. Warm exit to the £27 course, paste its FULL URL:
